@@ -8,19 +8,27 @@ from PySide6.QtCore import Qt, Signal
 
 
 class DashboardView(QWidget):
+    
+    # openViewerRequested = Signal(str)      # emits LAS file path
+    # uploadFlaiRequested = Signal(str)      # emits LAS file path
+    # runMatlabRequested = Signal(str)       # MATLAB extraction LAS path
+    # openSemanticRequested = Signal()       # open MATLAB semantic viewer
 
-    openViewerRequested = Signal(str)      # emits LAS file path
-    uploadFlaiRequested = Signal(str)      # emits LAS file path
+    openViewerRequested = Signal()
+    uploadFlaiRequested = Signal()
+    runMatlabRequested = Signal()
+    openSemanticRequested = Signal()  #this one might be unused and can probably be removed
 
-    runMatlabRequested = Signal(str)       # MATLAB extraction LAS path
-    openSemanticRequested = Signal()       # open MATLAB semantic viewer
+    projectInitialized = Signal()   # NEW
+
 
     def __init__(self):
         super().__init__()
+        self.project_state = project_state
         self.setWindowTitle("Dashboard")
         self.resize(900, 500)
 
-        self.selected_file = None
+        #self.selected_file = None  not needed anymore, project state is used instead.
 
         main_layout = QVBoxLayout()
         main_layout.setAlignment(Qt.AlignTop)
@@ -99,8 +107,11 @@ class DashboardView(QWidget):
         if not file_path:
             return
 
-        self.selected_file = file_path
+        self.project_state.las_path = file_path
+        self.project_state.reset_to_raw()   # important if user reloads a file
         self.file_label.setText(os.path.basename(file_path))
+
+        self.projectInitialized.emit()
 
         self.open_viewer_btn.setEnabled(True)
         self.upload_flai_btn.setEnabled(True)

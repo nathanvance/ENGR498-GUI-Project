@@ -61,12 +61,12 @@ nonGroundPoints = xyz(nonGroundIndex, :);
 
 toc
 
-figure
-pcshow(nonGroundPoints)
-title('Non ground points')
-view(60,25)
+%figure
+%pcshow(nonGroundPoints)
+%title('Non ground points')
+%view(60,25)
 
-print(gcf,'-dpng','-r300', 'f2_candidate powerline points.png')
+%print(gcf,'-dpng','-r300', 'f2_candidate powerline points.png')
 
 %% step1.5 Extract powerline candidate points (correct function call)
 
@@ -92,22 +92,22 @@ if isempty(isPLIndex) || numel(isPLIndex) ~= size(nonGroundPoints,1)
 end
 
 % Visualize
-figure
-pcshow(nonGroundPoints(isPLIndex,:))
-title('Candidate Powerline Points')
-view(60,25)
-print(gcf,'-dpng','-r300', 'f2_candidate powerline points.png')
+%figure
+%pcshow(nonGroundPoints(isPLIndex,:))
+%title('Candidate Powerline Points')
+%view(60,25)
+%print(gcf,'-dpng','-r300', 'f2_candidate powerline points.png')
 
 %% step2 Euclidean clustering
 ptCloud = pointCloud(nonGroundPoints(isPLIndex,:));
 minDistance = 2.0;
 [labels,numClusters] = pcsegdist(ptCloud,minDistance);
 
-figure
-pcshow(ptCloud.Location,labels)
-title('Candidate power line clusters')
-view(60,25)
-print(gcf,'-dpng','-r300', 'f3_candidate powerline points clusters.png')
+%figure
+%pcshow(ptCloud.Location,labels)
+%title('Candidate power line clusters')
+%view(60,25)
+%print(gcf,'-dpng','-r300', 'f3_candidate powerline points clusters.png')
 
 index = ones(size(labels,1),1);
 power_lines = [];
@@ -120,22 +120,22 @@ for i=1:numClusters
     power_lines = [power_lines; xyzs];
 end
 PLs = pointCloud(power_lines);
-figure
-pcshow(PLs);
-title('Power line clusters')
-view(60,25)
-print(gcf,'-dpng','-r300', 'f4_powerline points clusters.png')
+%figure
+%pcshow(PLs);
+%title('Power line clusters')
+%view(60,25)
+%print(gcf,'-dpng','-r300', 'f4_powerline points clusters.png')
 
 
 %% step3 Power line modeling
 ptCloud = PLs;
 minDistance = 0.3;
 [labels,numClusters] = pcsegdist(ptCloud,minDistance);
-figure
-show_segs(ptCloud.Location,labels,1);
-title('Different clusters are given different colors')
-view(60,25)
-print(gcf,'-dpng','-r300', 'f5_colorization clusters.png')
+%figure
+%show_segs(ptCloud.Location,labels,1);
+%title('Different clusters are given different colors')
+%view(60,25)
+%print(gcf,'-dpng','-r300', 'f5_colorization clusters.png')
 
 counts = [];
 index = ones(size(labels,1),1);
@@ -167,12 +167,12 @@ for i = 1:size(powerLines_pro,2)
     colors = [colors; repmat(rand(1,3),size(powerLines_pro(i).Location,1),1)];
 end
 % ptpl = pointCloud(powerLines_new,'Color',colors)
-figure
+%figure
 % pcshow(ptpl)
-pcshow(powerLines_new,colors)
-title('Power line clusters')
-view(60,25)
-print(gcf,'-dpng','-r300', 'f6_powerLines clusters.png')
+%pcshow(powerLines_new,colors)
+%title('Power line clusters')
+%view(60,25)
+%print(gcf,'-dpng','-r300', 'f6_powerLines clusters.png')
 
 % Calculate the power line length and delete the power line less than the length threshold
 i = 1;
@@ -251,12 +251,12 @@ for i = 1:size(powerLines_pro_new,2)
     PLMs(i).Color = temp;
 end
 % ptplm = pointCloud(powerLines_new,'Color',colors)
-figure
+%figure
 % pcshow(ptplm.Location(1:1:end,:),ptplm.Color(1:1:end,:))
-pcshow(powerLines_new,colors)
-title('Power line modeling')
-view(60,25)
-print(gcf,'-dpng','-r300', 'f7_Power line model.png')
+%pcshow(powerLines_new,colors)
+%title('Power line modeling')
+%view(60,25)
+%print(gcf,'-dpng','-r300', 'f7_Power line model.png')
 
 
 

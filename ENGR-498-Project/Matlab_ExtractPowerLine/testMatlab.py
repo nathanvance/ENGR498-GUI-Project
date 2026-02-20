@@ -12,9 +12,11 @@ import sys
 # 1. RUN MATLAB EXTRACTION
 # -----------------------------
 eng = matlab.engine.start_matlab()
-
-matlab_path = "powerlineAerialLidarData.las"
-
+#C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\ENGR-498-Project\Matlab_ExtractPowerLine\powerlineAerialLidarData.las
+matlab_path = r"C:\Users\henry\Downloads\movingtest1_filtered_with_normals_matlab_matched.las"
+#C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\ENGR-498-Project\Matlab_ExtractPowerLine\powerlineAerialLidarData.las"
+#C:\Users\henry\Downloads\movingtest2_filtered_with_normals_matlab.las"
+#C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\ENGR-498-Project\Matlab_ExtractPowerLine\demo_extract_powerline.m
 eng.addpath(r"C:\Users\henry\Downloads\3DLiDAR-main\3DLiDAR-main\ExtractPowerLine", 
             nargout=0)
 
@@ -22,48 +24,48 @@ print("Running MATLAB wire extraction…")
 PL, poly, ground_pts = eng.demo_extract_powerline(matlab_path, nargout=3)
 
 # Convert MATLAB array → NumPy
-# ground_pts_np = np.array(ground_pts)
+ground_pts_np = np.array(ground_pts)
 
-# # Save in NPZ format
-# np.savez("ground_points.npz", ground_points=ground_pts_np)
+# Save in NPZ format
+np.savez("ground_points.npz", ground_points=ground_pts_np)
 
-# print("Saved ground points to ground_points.npz")
+print("Saved ground points to ground_points.npz")
 
 
 # -----------------------------
 # SAVE POLY INFO
 # -----------------------------
-# import json
+import json
 
-# print("Saving wire info…")
+print("Saving wire info…")
 
-# poly_list = []
-# for i, entry in enumerate(poly):
-#     poly_list.append({
-#         "p": list(entry["p"][0]),        # polynomial coefficients
-#         "normr": float(entry["normr"]),
-#         "df": float(entry["df"]),
-#         "rsq": float(entry["rsq"]),
-#         "mu_mean": float(entry["mu_mean"]),
-#         "mu_std": float(entry["mu_std"])
-#     })
+poly_list = []
+for i, entry in enumerate(poly):
+    poly_list.append({
+        "p": list(entry["p"][0]),        # polynomial coefficients
+        "normr": float(entry["normr"]),
+        "df": float(entry["df"]),
+        "rsq": float(entry["rsq"]),
+        "mu_mean": float(entry["mu_mean"]),
+        "mu_std": float(entry["mu_std"])
+    })
 
-# with open("wire_info.json", "w") as f:
-#     json.dump(poly_list, f, indent=2)
+with open("wire_info.json", "w") as f:
+    json.dump(poly_list, f, indent=2)
 
-# print("✓ Saved wire_info.json")
+print("✓ Saved wire_info.json")
 
-# print("\n=== DEBUG: MATLAB poly structure ===")
+print("\n=== DEBUG: MATLAB poly structure ===")
 
-# # Print top-level keys
-# try:
-#     print("poly.keys():", poly.keys())
-# except:
-#     print("poly is not a dict. Type:", type(poly))
+# Print top-level keys
+try:
+    print("poly.keys():", poly.keys())
+except:
+    print("poly is not a dict. Type:", type(poly))
 
-# # Print full structure
-# print("\nFull poly structure:")
-# print(poly)
+# Print full structure
+print("\nFull poly structure:")
+print(poly)
 
 # # If poly is an array of structs, inspect first element
 # try:
