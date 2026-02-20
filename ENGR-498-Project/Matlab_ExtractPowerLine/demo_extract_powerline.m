@@ -31,7 +31,7 @@
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %Function wrapper for use in python
-function [PL, poly] = demo_extract_powerline(filepath)
+function [PL, poly, groundPoints] = demo_extract_powerline(filepath)
 
 %% step1 Mobile LiDAR filtering (Single LAS file)
 clc;
@@ -59,6 +59,12 @@ nonGroundIndex = xyz(:,3) > centers(I+3);
 % Save points
 nonGroundPoints = xyz(nonGroundIndex, :);
 
+% Ground index — the opposite of non-ground
+groundIndex = xyz(:,3) <= centers(I+3);
+
+% Extract ground points (THIS is what you need)
+groundPoints = xyz(groundIndex, :);
+
 toc
 
 figure
@@ -66,14 +72,19 @@ pcshow(nonGroundPoints)
 title('Non ground points')
 view(60,25)
 
-print(gcf,'-dpng','-r300', 'f2_candidate powerline points.png')
+%print(gcf,'-dpng','-r300', 'f2_candidate powerline points.png')
 
 %% step1.5 Extract powerline candidate points (correct function call)
 
 % Parameters from original code
+%radius   = 0.5;
+%angleThr = 10;
+%LThr     = 0.98;
+
+%modified parameters from Claude
 radius   = 0.5;
 angleThr = 10;
-LThr     = 0.98;
+LThr     = 0.90;
 
 % Make sure extractPLs.m is available
 if exist('extractPLs','file') ~= 2
@@ -168,7 +179,7 @@ for i = 1:size(powerLines_pro,2)
 end
 % ptpl = pointCloud(powerLines_new,'Color',colors)
 figure
-% pcshow(ptpl)
+ % pcshow(ptpl)
 pcshow(powerLines_new,colors)
 title('Power line clusters')
 view(60,25)
@@ -255,11 +266,42 @@ figure
 % pcshow(ptplm.Location(1:1:end,:),ptplm.Color(1:1:end,:))
 pcshow(powerLines_new,colors)
 title('Power line modeling')
-view(60,25)
-print(gcf,'-dpng','-r300', 'f7_Power line model.png')
+% view(60,25)
+% print(gcf,'-dpng','-r300', 'f7_Power line model.png')
 
+locations = {powerLines_pro.Location};
+labels    = {powerLines_pro.Label};
+counts    = {powerLines_pro.Count};
+ids       = {powerLines_pro.Ids};
 
+powerLines_pro_out = struct( ...
+    'Location', {locations}, ...
+    'Label',    {labels}, ...
+    'Count',    {counts}, ...
+    'Ids',      {ids} ...
+);
 
-    PL = powerLines_pro;     % struct array with Location, Label, Count
-    poly = polyResults;      % polyfit output struct
+poly = cell(1, numel(polyResults));
+
+for i = 1:numel(polyResults)
+
+    % Original z-values for this wire
+    z = powerLines_pro(i).Location(:,3);
+
+    % Compute R^2 manually
+    SSE = polyResults(i).S.normr^2;
+    SST = sum((z - mean(z)).^2);
+    R2  = 1 - (SSE / SST);
+
+    poly{i} = struct( ...
+        'p', polyResults(i).p, ...       % coefficients
+        'normr', polyResults(i).S.normr, ...
+        'df', polyResults(i).S.df, ...
+        'rsq', R2, ...                   % computed R²
+        'mu_mean', polyResults(i).mu(1), ...
+        'mu_std',  polyResults(i).mu(2) ...
+    );
+end
+    PL = powerLines_pro_out;     % struct array with Location, Label, Count
+    %poly = polyResults;      % polyfit output struct
 end
