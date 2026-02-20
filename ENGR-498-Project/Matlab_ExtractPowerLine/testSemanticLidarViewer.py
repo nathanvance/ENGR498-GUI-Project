@@ -16,7 +16,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from pyvistaqt import QtInteractor
         
-LAS_PATH = r"C:\Users\henry\Downloads\ENGR-498-Project\Matlab_ExtractPowerLine\powerlineAerialLidarData.las"
+LAS_PATH = r"C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\ENGR-498-Project\Matlab_ExtractPowerLine\powerlineAerialLidarData.las"
+#C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\ENGR-498-Project\Matlab_ExtractPowerLine\powerlineAerialLidarData.las
+#C:\Users\henry\Downloads\ENGR-498-Project\Matlab_ExtractPowerLine\powerlineAerialLidarData.las
 
 CLASS_NAME_MAP = {
     # 0: "Created, never classified",
@@ -185,6 +187,7 @@ class SemanticViewer(QWidget):
         info_layout.addStretch()
         right_layout.addWidget(info_widget, stretch=1)
 
+        #TODO: some of these can be saved in a project state and called as ex. project_state.get_ground_points
         # storage
         self.las_actor = None
         self.wire_actors = []
