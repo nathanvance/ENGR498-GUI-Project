@@ -1,5 +1,9 @@
 # Backend Software Description
 
+For the click-through documentation set, use:
+
+- [backend_docs/README.md](backend_docs/README.md)
+
 ## Quick Overview
 
 At a high level, the backend starts with one or more rosbags and turns them
