@@ -10,21 +10,21 @@ from views.dashboard_view import DashboardView
 # IMPORT EACH VIEWER WITH A UNIQUE NAME
 from views.semantic_viewer import SemanticViewer as PySemanticViewer
 from Matlab_ExtractPowerLine.testSemanticLidarViewer import SemanticViewer as MatlabSemanticViewer
-from ProjectState import ProjectState #import the shared state object
+#from ProjectState import ProjectState #import the shared state object
 
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.project_state = ProjectState() #initialize shared state
+        #self.project_state = ProjectState() #initialize shared state
         self.setWindowTitle("LiDAR App")
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
 
-        # self.dashboard = DashboardView()
-        self.dashboard = DashboardView(self.project_state)  
+        self.dashboard = DashboardView()
+        #self.dashboard = DashboardView(self.project_state)  
 
         # Two DIFFERENT viewer objects
         self.python_viewer = PySemanticViewer()         # used by Open Viewer

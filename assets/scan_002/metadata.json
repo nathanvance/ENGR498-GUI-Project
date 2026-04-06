@@ -1,0 +1,17 @@
+{
+  "name": "scan_002",
+  "created_at": "2026-03-20",
+  "status": {
+    "slam": "done",
+    "filtering": "pending",
+    "flai": "pending",
+    "wire_extraction": "pending",
+    "fusion": "pending"
+  },
+  "files": "C:\\Users\\henry\\OneDrive\\Documents\\GitHub\\ENGR498-GUI-Project\\ENGR-498-Project\\assets\\scan_002\\processed\\slam\\lt3.las",
+  "wire_params": {
+    "R": 0.6,
+    "angleThr": 12,
+    "linearity": 0.97
+  }
+}

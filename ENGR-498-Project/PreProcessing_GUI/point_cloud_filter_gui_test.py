@@ -406,9 +406,22 @@ class PointCloudFilterViewer(QWidget):
     # ------------------------------------------------------------------
     
     def load_las_file(self):
-        if self.filename is None:
+        print("Load LAS file clicked")
+        if self.filename is not None:
             return
-        filename = self.filename
+
+        else:
+            """Load a LAS file"""
+            filename, _ = QFileDialog.getOpenFileName(
+                self,
+                "Open LAS File",
+                "",
+                "LAS Files (*.las *.laz);;All Files (*)"
+            )
+            
+            if not filename:
+                return
+        print(f"Loading LAS file: {self.filename}")
 
         try:
             las = laspy.read(filename)
@@ -470,130 +483,98 @@ class PointCloudFilterViewer(QWidget):
         self._visualize_current()
         
     def save_las_file(self):
-        import os
-        import json
-        import numpy as np
-        import laspy
-        from PySide6.QtWidgets import QMessageBox
-
+        """Save the current filtered point cloud to a LAS file"""
         if self.current_xyz is None:
             QMessageBox.warning(self, "Warning", "No point cloud to save")
             return
-
-        if not self.filename:
-            QMessageBox.warning(self, "Warning", "No source file path provided")
+            
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save LAS File",
+            "",
+            "LAS Files (*.las);;LAZ Files (*.laz);;All Files (*)"
+        )
+        
+        if not filename:
             return
-
+            
         try:
-            print("Original source file:", self.filename)
-
-            # -----------------------------------
-            # Build filtered output path
-            # Example input:
-            # assets/scan_001/processed/slam/cloud.las
-            #
-            # Output:
-            # assets/scan_001/processed/filtered/cloud_filtered.las
-            # -----------------------------------
-            source_path = os.path.normpath(self.filename)
-
-            # go up from .../processed/slam/cloud.las -> .../processed
-            slam_dir = os.path.dirname(source_path)                # .../processed/slam
-            processed_dir = os.path.dirname(slam_dir)             # .../processed
-            scan_dir = os.path.dirname(processed_dir)             # .../scan_001
-
-            filtered_dir = os.path.join(processed_dir, "filtered")
-            os.makedirs(filtered_dir, exist_ok=True)
-
-            output_path = os.path.join(filtered_dir, "cloud_filtered.las")
-
-            print("Saving filtered point cloud to:", output_path)
-
-            # -----------------------------------
-            # Determine LAS format
-            # -----------------------------------
+            # Determine point format based on available data
+            # Format 2: XYZ + RGB
+            # Format 3: XYZ + RGB + Time (we'll use for RGB + Intensity)
+            # Format 7: XYZ + RGB + Intensity (LAS 1.4)
             has_colors = self.current_colors is not None
             has_intensity = self.current_intensity is not None
-
+            
             if has_colors and has_intensity:
-                point_format, version = 3, "1.2"
+                point_format = 3  # Supports XYZ, Intensity, and RGB
+                version = "1.2"
             elif has_colors:
-                point_format, version = 2, "1.2"
+                point_format = 2  # Supports XYZ and RGB
+                version = "1.2"
             elif has_intensity:
-                point_format, version = 1, "1.2"
+                point_format = 1  # Supports XYZ and Intensity
+                version = "1.2"
             else:
-                point_format, version = 0, "1.2"
-
+                point_format = 0  # Basic XYZ
+                version = "1.2"
+            
+            # Create header
             header = laspy.LasHeader(point_format=point_format, version=version)
             header.offsets = np.min(self.current_xyz, axis=0)
             header.scales = [0.001, 0.001, 0.001]
-
+            
+            # Create LAS object
             las = laspy.LasData(header)
+            
+            # Set coordinates
             las.x = self.current_xyz[:, 0]
             las.y = self.current_xyz[:, 1]
             las.z = self.current_xyz[:, 2]
-
+            
+            # Set intensity if available
             if self.current_intensity is not None:
                 las.intensity = self.current_intensity.astype(np.uint16)
-
+            
+            # Set colors if available
             if self.current_colors is not None:
+                # Ensure colors are in 0-65535 range (16-bit)
                 if self.current_colors.max() <= 255:
+                    # Scale from 8-bit to 16-bit
                     colors_16bit = (self.current_colors.astype(np.uint32) * 257).astype(np.uint16)
                 else:
                     colors_16bit = self.current_colors.astype(np.uint16)
-
+                    
                 las.red = colors_16bit[:, 0]
                 las.green = colors_16bit[:, 1]
                 las.blue = colors_16bit[:, 2]
-
-            # Optional normals
+            
+            # Set normals if available (as extra bytes)
             if self.current_normals is not None:
                 try:
-                    for name in ("NormalX", "NormalY", "NormalZ"):
-                        las.add_extra_dim(laspy.ExtraBytesParams(name=name, type=np.float32))
+                    # Add extra bytes for normals
+                    las.add_extra_dim(laspy.ExtraBytesParams(
+                        name="NormalX",
+                        type=np.float32
+                    ))
+                    las.add_extra_dim(laspy.ExtraBytesParams(
+                        name="NormalY",
+                        type=np.float32
+                    ))
+                    las.add_extra_dim(laspy.ExtraBytesParams(
+                        name="NormalZ",
+                        type=np.float32
+                    ))
+                    
                     las.NormalX = self.current_normals[:, 0].astype(np.float32)
                     las.NormalY = self.current_normals[:, 1].astype(np.float32)
                     las.NormalZ = self.current_normals[:, 2].astype(np.float32)
                 except Exception as e:
                     print(f"Warning: Could not save normals: {e}")
-
-            # -----------------------------------
-            # Write LAS file
-            # -----------------------------------
-            las.write(output_path)
-
-            # -----------------------------------
-            # Update metadata.json
-            # -----------------------------------
-            metadata_path = os.path.join(scan_dir, "metadata.json")
-
-            if os.path.exists(metadata_path):
-                with open(metadata_path, "r") as f:
-                    metadata = json.load(f)
-            else:
-                metadata = {}
-
-            # Ensure required structure exists
-            if "files" not in metadata or not isinstance(metadata["files"], dict):
-                metadata["files"] = {}
-
-            if "status" not in metadata or not isinstance(metadata["status"], dict):
-                metadata["status"] = {}
-
-            # Save relative path if you want cleaner metadata
-            rel_output_path = os.path.relpath(output_path, scan_dir).replace("\\", "/")
-
-            metadata["files"]["filtered"] = rel_output_path
-            metadata["status"]["filtering"] = "done"
-
-            with open(metadata_path, "w") as f:
-                json.dump(metadata, f, indent=2)
-
-            print("Updated metadata.json:", metadata_path)
-
-            # -----------------------------------
-            # Show success
-            # -----------------------------------
+                
+            las.write(filename)
+            
+            # Show what was saved
             info_parts = [f"Saved {len(self.current_xyz):,} points"]
             if self.current_colors is not None:
                 info_parts.append("with RGB colors")
@@ -601,18 +582,13 @@ class PointCloudFilterViewer(QWidget):
                 info_parts.append("with intensity")
             if self.current_normals is not None:
                 info_parts.append("with normals")
-
+            
             QMessageBox.information(
-                self,
-                "Success",
-                f"{', '.join(info_parts)} to:\n{output_path}"
+                self, 
+                "Success", 
+                f"{', '.join(info_parts)} to:\n{filename}"
             )
-
-            # -----------------------------------
-            # Return to dashboard
-            # -----------------------------------
-            self.backRequested.emit()
-
+            
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save LAS file:\n{str(e)}")
         

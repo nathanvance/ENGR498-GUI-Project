@@ -19,16 +19,16 @@ class DashboardView(QWidget):
     runMatlabRequested = Signal()
     openSemanticRequested = Signal()  #this one might be unused and can probably be removed
 
-    projectInitialized = Signal()   # NEW
+    #projectInitialized = Signal()   # NEW
 
 
     def __init__(self):
         super().__init__()
-        self.project_state = project_state
+        #self.project_state = project_state
         self.setWindowTitle("Dashboard")
         self.resize(900, 500)
 
-        #self.selected_file = None  not needed anymore, project state is used instead.
+        self.selected_file = None  #not needed anymore, project state is used instead.
 
         main_layout = QVBoxLayout()
         main_layout.setAlignment(Qt.AlignTop)
@@ -107,11 +107,11 @@ class DashboardView(QWidget):
         if not file_path:
             return
 
-        self.project_state.las_path = file_path
-        self.project_state.reset_to_raw()   # important if user reloads a file
+        #self.project_state.las_path = file_path
+        #self.project_state.reset_to_raw()   # important if user reloads a file
         self.file_label.setText(os.path.basename(file_path))
 
-        self.projectInitialized.emit()
+        #self.projectInitialized.emit()
 
         self.open_viewer_btn.setEnabled(True)
         self.upload_flai_btn.setEnabled(True)
@@ -119,9 +119,9 @@ class DashboardView(QWidget):
 
     # ----------------------------
     def open_viewer_clicked(self):
-        if not self.selected_file:
-            QMessageBox.warning(self, "No file", "Please select a .las file first.")
-            return
+        # if not self.selected_file:
+        #     QMessageBox.warning(self, "No file", "Please select a .las file first.")
+        #     return
         self.openViewerRequested.emit(self.selected_file)
 
     # ----------------------------
