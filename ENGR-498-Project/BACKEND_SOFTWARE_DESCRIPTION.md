@@ -70,138 +70,6 @@ At a high level, the backend is split into four runtime domains:
 The pipeline is not a single monolithic script. It is a staged system with
 branch points, file contracts, and output handoffs between domains.
 
-### Sequence Diagram: End-to-End Backend Flow
-
-```mermaid
-sequenceDiagram
-    participant User as User / Operator
-    participant Win as Windows Python
-    participant Dock as Docker + ROS
-    participant Fast as FAST-LIO
-    participant Samp as TF/Image/GPS Sampler
-    participant Yolo as YOLO Inference
-    participant Fusion as Fusion Engine
-    participant GPS as GPS Georeferencer
-
-    User->>Win: Launch pose-recovery workflow
-    Win->>Dock: docker compose run portable-ros-stack
-    Dock->>Fast: Start FAST-LIO
-    Dock->>Samp: Start tf_sample_camera_gps.py
-    Dock->>Dock: Replay rosbag with /clock
-    Fast-->>Dock: Build map / scans.pcd
-    Samp-->>Dock: Write images/, image_timestamps.csv
-    Samp-->>Dock: Write tf_camera_out.csv, tf_gps_out.csv
-    Dock-->>Win: Persist outputs under rosbag_preprocessing/outputs
-
-    User->>Win: Launch inference
-    Win->>Yolo: Local inference or prepare Colab bundle
-    Yolo-->>Win: Write masks_npz/, meta_json/
-
-    User->>Win: Launch fusion
-    Win->>Fusion: fuse_masks_to_slam.py
-    Fusion-->>Win: Write fused_objects.json
-    Fusion-->>Win: Write fused_semantic_map.ply
-    Fusion-->>Win: Write fused_semantic_labels.npz
-    Fusion-->>Win: Write pole_neighbor_distances.json
-
-    alt GPS data available
-        User->>Win: Launch georeference step
-        Win->>GPS: georeference_from_tf_gps.py
-        GPS-->>Win: Write gps_alignment.json
-        GPS-->>Win: Write georeferenced JSON outputs
-    end
-```
-
-### Sequence Diagram: Inference Branching
-
-```mermaid
-flowchart TD
-    A[pose recovery run directory] --> B[run_yolo_inference.py]
-    B --> C{runtime mode}
-    C -->|local| D[probe CUDA + ultralytics]
-    C -->|auto| D
-    C -->|colab| H[prepare colab_bundle]
-    D --> E{usable local NVIDIA GPU?}
-    E -->|yes| F[run local YOLO segmentation]
-    E -->|no| H
-    F --> G[masks_npz + meta_json + pred_images]
-    H --> I[upload/run in Colab]
-    I --> J[run_inference_colab.py]
-    J --> K[Colab outputs]
-    K --> L[import_colab_inference_results.py]
-    L --> G
-```
-
-### Sequence Diagram: GPS Georeferencing
-
-```mermaid
-flowchart LR
-    A[tf_gps_out.csv] --> B[load + filter GPS/TF samples]
-    B --> C[convert GPS LLH to ECEF/ENU]
-    C --> D[apply GPS-to-LiDAR lever arm]
-    D --> E[fit weighted SE2 + Z offset]
-    E --> F[gps_alignment.json]
-    E --> G[apply transform to fused objects]
-    E --> H[apply transform to powerline overlay]
-    G --> I[fused_objects_georeferenced.json]
-    H --> J[powerlines_georeferenced.json]
-```
-
-### Sequence Diagram: Camera-LiDAR Fusion
-
-```mermaid
-sequenceDiagram
-    participant Bag as ROS bag
-    participant Samp as TF / image sampler
-    participant Fast as FAST-LIO / SLAM
-    participant Infer as YOLO inference
-    participant Fusion as fuse_masks_to_slam.py
-    participant Native as pointcloud_accel.dll
-    participant Cluster as clustering + cleanup
-    participant Dist as pole distance stage
-    participant Geo as georeference_from_tf_gps.py
-
-    Bag->>Fast: Replay LiDAR + IMU topics
-    Fast-->>Fusion: Global SLAM point cloud (scans.pcd)
-    Bag->>Samp: Replay image/compressed messages
-    Samp-->>Fusion: images/ + image_timestamps.csv
-    Samp-->>Fusion: tf_camera_out.csv
-    Samp-->>Geo: tf_gps_out.csv
-    Samp->>Samp: timestamp-match /tf for each image event
-    Fusion->>Infer: supply JPG frames for segmentation
-    Infer-->>Fusion: *_masks.npz + *_meta.json
-
-    Fusion->>Fusion: load intrinsics/extrinsics/poses/frames
-    Fusion->>Fusion: nearest-time match each image to a LiDAR pose
-    loop For each frame
-        Fusion->>Native: project map points through map->lidar->camera
-        Native-->>Fusion: best mask index + confidence per point
-        Fusion->>Fusion: keep densest cluster for each detection
-        Fusion->>Fusion: accumulate votes and best confidence across frames
-    end
-
-    Fusion->>Cluster: class-wise cleanup and instance segmentation
-    Cluster->>Cluster: statistical outlier removal
-    Cluster->>Cluster: Euclidean/DBSCAN-style clustering
-    Cluster->>Cluster: merge pole fragments
-    Cluster->>Cluster: merge transformer fragments
-    Cluster-->>Fusion: final object instances
-
-    Fusion->>Dist: compute pole-to-pole neighbor distances
-    Dist-->>Fusion: spacing edges + metadata
-
-    Fusion-->>Fusion: write fused_semantic_map.ply
-    Fusion-->>Fusion: write fused_semantic_labels.npz
-    Fusion-->>Fusion: write fused_objects.json
-    Fusion-->>Fusion: write pole_neighbor_distances.json
-
-    Geo->>Geo: load GPS/TF samples and filter bad fixes
-    Geo->>Geo: fit local-to-ENU rotation/translation/scale
-    Geo->>Geo: apply transform to fused object centroids
-    Geo-->>Fusion: fused_objects_georeferenced.json
-    Geo-->>Fusion: gps_alignment.json + tf_gps_georeferenced.csv
-```
-
 ## Top-Level Backend Entry Points
 
 ### Project root utilities
@@ -676,6 +544,26 @@ This file implements three runtime modes:
 - `local`
 - `colab`
 
+### Flowchart: Inference Branching
+
+```mermaid
+flowchart TD
+    A[pose recovery run directory] --> B[run_yolo_inference.py]
+    B --> C{runtime mode}
+    C -->|local| D[probe CUDA + ultralytics]
+    C -->|auto| D
+    C -->|colab| H[prepare colab_bundle]
+    D --> E{usable local NVIDIA GPU?}
+    E -->|yes| F[run local YOLO segmentation]
+    E -->|no| H
+    F --> G[masks_npz + meta_json + pred_images]
+    H --> I[upload/run in Colab]
+    I --> J[run_inference_colab.py]
+    J --> K[Colab outputs]
+    K --> L[import_colab_inference_results.py]
+    L --> G
+```
+
 ### Runtime branch behavior
 
 #### `--runtime local`
@@ -854,6 +742,42 @@ Rejected by default:
 
 Pedestal support was explicitly enabled so pedestal-like classes can pass
 through the same fusion path as poles, crossarms, and transformers.
+
+### Flowchart: Camera-LiDAR Fusion
+
+```mermaid
+flowchart TD
+    A[rosbag replay] --> B[FAST-LIO builds SLAM map]
+    A --> C[TF sampler exports JPG images]
+    A --> D[TF sampler writes tf_camera_out.csv]
+    A --> E[TF sampler writes tf_gps_out.csv]
+    C --> F[YOLO local or Colab inference]
+    F --> G[*_masks.npz + *_meta.json]
+    B --> H[fuse_masks_to_slam.py]
+    D --> H
+    G --> H
+    H --> I[load intrinsics + extrinsics + poses + frame timestamps]
+    I --> J[nearest-time match image frame to LiDAR pose]
+    J --> K[project map points through map->lidar->camera]
+    K --> L[pointcloud_accel.dll picks best mask per point]
+    L --> M[keep densest cluster per detection]
+    M --> N[accumulate votes and best confidence across frames]
+    N --> O[class-wise statistical cleanup]
+    O --> P[Euclidean / DBSCAN-style instance clustering]
+    P --> Q[merge pole fragments]
+    Q --> R[merge transformer fragments]
+    R --> S[final object instances]
+    S --> T[compute pole-to-pole neighbor distances]
+    T --> U[fused_semantic_map.ply]
+    T --> V[fused_semantic_labels.npz]
+    T --> W[fused_objects.json]
+    T --> X[pole_neighbor_distances.json]
+    E --> Y[georeference_from_tf_gps.py]
+    W --> Y
+    Y --> Z[gps_alignment.json]
+    Y --> AA[fused_objects_georeferenced.json]
+    Y --> AB[tf_gps_georeferenced.csv]
+```
 
 ### Detailed algorithm
 
@@ -1142,6 +1066,21 @@ This script fits a transform from the local SLAM frame into GPS space using the
 - LiDAR pose in the local map frame at each GPS event,
 - GPS latitude/longitude/altitude,
 - GPS quality fields from `sensor_msgs/NavSatFix`.
+
+### Flowchart: GPS Georeferencing
+
+```mermaid
+flowchart LR
+    A[tf_gps_out.csv] --> B[load + filter GPS/TF samples]
+    B --> C[convert GPS LLH to ECEF/ENU]
+    C --> D[apply GPS-to-LiDAR lever arm]
+    D --> E[fit weighted SE2 + Z offset]
+    E --> F[gps_alignment.json]
+    E --> G[apply transform to fused objects]
+    E --> H[apply transform to powerline overlay]
+    G --> I[fused_objects_georeferenced.json]
+    H --> J[powerlines_georeferenced.json]
+```
 
 ### Detailed algorithm
 
@@ -1463,6 +1402,48 @@ main schemas that downstream stages depend on.
 | `fit_quality.rmse_z_m` | float | Vertical fit RMSE |
 
 ## 12. Example end-to-end backend flow
+
+### Sequence Diagram: End-to-End Backend Flow
+
+```mermaid
+sequenceDiagram
+    participant User as User / Operator
+    participant Win as Windows Python
+    participant Dock as Docker + ROS
+    participant Fast as FAST-LIO
+    participant Samp as TF/Image/GPS Sampler
+    participant Yolo as YOLO Inference
+    participant Fusion as Fusion Engine
+    participant GPS as GPS Georeferencer
+
+    User->>Win: Launch pose-recovery workflow
+    Win->>Dock: docker compose run portable-ros-stack
+    Dock->>Fast: Start FAST-LIO
+    Dock->>Samp: Start tf_sample_camera_gps.py
+    Dock->>Dock: Replay rosbag with /clock
+    Fast-->>Dock: Build map / scans.pcd
+    Samp-->>Dock: Write images/, image_timestamps.csv
+    Samp-->>Dock: Write tf_camera_out.csv, tf_gps_out.csv
+    Dock-->>Win: Persist outputs under rosbag_preprocessing/outputs
+
+    User->>Win: Launch inference
+    Win->>Yolo: Local inference or prepare Colab bundle
+    Yolo-->>Win: Write masks_npz/, meta_json/
+
+    User->>Win: Launch fusion
+    Win->>Fusion: fuse_masks_to_slam.py
+    Fusion-->>Win: Write fused_objects.json
+    Fusion-->>Win: Write fused_semantic_map.ply
+    Fusion-->>Win: Write fused_semantic_labels.npz
+    Fusion-->>Win: Write pole_neighbor_distances.json
+
+    alt GPS data available
+        User->>Win: Launch georeference step
+        Win->>GPS: georeference_from_tf_gps.py
+        GPS-->>Win: Write gps_alignment.json
+        GPS-->>Win: Write georeferenced JSON outputs
+    end
+```
 
 ### Step A: preprocess a bag
 
