@@ -172,6 +172,10 @@ Typical pose-recovery output:
 
 ```text
 outputs/pose_recovery/<bag_stem>_<timestamp_pid>/
+  image_timestamps.csv
+  images/
+    frame_000001.jpg
+    frame_000002.jpg
   tf_camera_out.csv
   tf_gps_out.csv
   pcd/
@@ -229,6 +233,19 @@ outputs/pose_recovery/<run_name>/tf_gps_out.csv
 ```
 
 That CSV is the direct input expected by the Fusion georeferencing stage.
+
+It also saves every camera message received on the detected or overridden image
+topic as a `.jpg` file in:
+
+```text
+outputs/pose_recovery/<run_name>/images/
+```
+
+and writes a Fusion-friendly image timestamp file:
+
+```text
+outputs/pose_recovery/<run_name>/image_timestamps.csv
+```
 
 
 ## Compose Notes
