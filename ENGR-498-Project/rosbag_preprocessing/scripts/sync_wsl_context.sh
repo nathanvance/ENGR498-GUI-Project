@@ -6,6 +6,7 @@ CONTEXT_ROOT="${PROJECT_ROOT}/context/runtime"
 RUNTIME_USER="${PORTABLE_ROS_RUNTIME_USER:-portable}"
 HOME_ROOT="${CONTEXT_ROOT}/home/${RUNTIME_USER}"
 USR_LOCAL_ROOT="${CONTEXT_ROOT}/usr_local"
+OVERRIDES_ROOT="${PROJECT_ROOT}/overrides"
 WSL_HOME_ROOT="${WSL_HOME_ROOT:-$HOME}"
 WS_CALIB_ROOT="${WS_CALIB_ROOT:-${WSL_HOME_ROOT}/ws_calib}"
 WS_LIVOX_ROOT="${WS_LIVOX_ROOT:-${WSL_HOME_ROOT}/ws_livox}"
@@ -196,6 +197,10 @@ sync_tree "${WS_LIVOX_ROOT}/scripts" "${HOME_ROOT}/ws_livox/scripts" \
   --exclude __pycache__ \
   --exclude run_logs \
   --exclude pose_recovery_outputs
+
+if [[ -d "${OVERRIDES_ROOT}/ws_livox/scripts" ]]; then
+  rsync -a "${OVERRIDES_ROOT}/ws_livox/scripts/" "${HOME_ROOT}/ws_livox/scripts/"
+fi
 
 sync_glob "${IRIDESCENCE_ROOT}/build/libiridescence.so*" "${HOME_ROOT}/iridescence/build"
 sync_file "${GLFW_SHIM_PATH}" "${HOME_ROOT}/lib/libglfw_hint_shim.so"

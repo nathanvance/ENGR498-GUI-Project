@@ -68,6 +68,8 @@ container project folder:
   ..\rosbag_preprocessing\outputs\pose_recovery\<run_name>\
 
 Typical files from that stage are:
+- image_timestamps.csv
+- images\frame_000001.jpg
 - tf_camera_out.csv
 - tf_gps_out.csv
 - pcd\scans.pcd
@@ -109,6 +111,12 @@ Expected Inputs
    Required columns:
    - filename
    - t_query_sec
+
+   The rosbag preprocessing workflow now produces this file directly as:
+   - ..\rosbag_preprocessing\outputs\pose_recovery\<run_name>\image_timestamps.csv
+
+   and stores the corresponding JPG frames in:
+   - ..\rosbag_preprocessing\outputs\pose_recovery\<run_name>\images\
 
 5. point cloud
    Tested with:
