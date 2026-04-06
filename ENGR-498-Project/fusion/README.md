@@ -3,6 +3,14 @@
 This folder contains the mask-to-point-cloud fusion pipeline, optional native
 accelerators, GPS georeferencing, and the Leaflet export/viewer hooks.
 
+Windows-side Python setup for this folder is documented at:
+
+- `..\README.md`
+
+and installed from the project root with:
+
+- `install_repo_python_env.ps1`
+
 Main scripts:
 
 - `fuse_masks_to_slam.py`
