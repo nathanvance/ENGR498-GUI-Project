@@ -147,6 +147,61 @@ flowchart LR
     H --> J[powerlines_georeferenced.json]
 ```
 
+### Sequence Diagram: Camera-LiDAR Fusion
+
+```mermaid
+sequenceDiagram
+    participant Bag as ROS bag
+    participant Samp as TF / image sampler
+    participant Fast as FAST-LIO / SLAM
+    participant Infer as YOLO inference
+    participant Fusion as fuse_masks_to_slam.py
+    participant Native as pointcloud_accel.dll
+    participant Cluster as clustering + cleanup
+    participant Dist as pole distance stage
+    participant Geo as georeference_from_tf_gps.py
+
+    Bag->>Fast: Replay LiDAR + IMU topics
+    Fast-->>Fusion: Global SLAM point cloud (scans.pcd)
+    Bag->>Samp: Replay image/compressed messages
+    Samp-->>Fusion: images/ + image_timestamps.csv
+    Samp-->>Fusion: tf_camera_out.csv
+    Samp-->>Geo: tf_gps_out.csv
+    Samp->>Samp: timestamp-match /tf for each image event
+    Fusion->>Infer: supply JPG frames for segmentation
+    Infer-->>Fusion: *_masks.npz + *_meta.json
+
+    Fusion->>Fusion: load intrinsics/extrinsics/poses/frames
+    Fusion->>Fusion: nearest-time match each image to a LiDAR pose
+    loop For each frame
+        Fusion->>Native: project map points through map->lidar->camera
+        Native-->>Fusion: best mask index + confidence per point
+        Fusion->>Fusion: keep densest cluster for each detection
+        Fusion->>Fusion: accumulate votes and best confidence across frames
+    end
+
+    Fusion->>Cluster: class-wise cleanup and instance segmentation
+    Cluster->>Cluster: statistical outlier removal
+    Cluster->>Cluster: Euclidean/DBSCAN-style clustering
+    Cluster->>Cluster: merge pole fragments
+    Cluster->>Cluster: merge transformer fragments
+    Cluster-->>Fusion: final object instances
+
+    Fusion->>Dist: compute pole-to-pole neighbor distances
+    Dist-->>Fusion: spacing edges + metadata
+
+    Fusion-->>Fusion: write fused_semantic_map.ply
+    Fusion-->>Fusion: write fused_semantic_labels.npz
+    Fusion-->>Fusion: write fused_objects.json
+    Fusion-->>Fusion: write pole_neighbor_distances.json
+
+    Geo->>Geo: load GPS/TF samples and filter bad fixes
+    Geo->>Geo: fit local-to-ENU rotation/translation/scale
+    Geo->>Geo: apply transform to fused object centroids
+    Geo-->>Fusion: fused_objects_georeferenced.json
+    Geo-->>Fusion: gps_alignment.json + tf_gps_georeferenced.csv
+```
+
 ## Top-Level Backend Entry Points
 
 ### Project root utilities
@@ -1552,3 +1607,327 @@ The result is a pipeline that can:
 - assign GPS coordinates to fused assets and powerline overlays.
 
 That backend is the foundation the future GUI layer should call, not replace.
+
+## Appendix A. Command Cookbook
+
+This appendix collects practical commands by stage. The commands below are
+representative templates; callers should replace placeholder paths and run
+names with real values.
+
+### A.1 Install the Windows-side Python environment
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install_repo_python_env.ps1 `
+  -Python C:\path\to\python.exe
+```
+
+Use the frozen lock file:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install_repo_python_env.ps1 `
+  -Python C:\path\to\python.exe `
+  -UseLockFile
+```
+
+Add the optional MATLAB bridge:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install_repo_python_env.ps1 `
+  -Python C:\path\to\python.exe `
+  -IncludeMatlabEngine
+```
+
+### A.2 Build or rebuild the Docker image from WSL
+
+```powershell
+wsl bash -lc "cd /mnt/c/path/to/ENGR-498-Project/rosbag_preprocessing && bash scripts/build_image_wsl.sh"
+```
+
+### A.3 Open an interactive shell inside the ROS container
+
+```powershell
+python .\rosbag_preprocessing\launcher\run_pipeline.py bash
+```
+
+### A.4 Run the calibration workflow
+
+```powershell
+python .\rosbag_preprocessing\launcher\run_calibration_workflow.py `
+  .\data\calibration_dataset `
+  --run-name calib_run_01
+```
+
+Stop after preprocessing only:
+
+```powershell
+python .\rosbag_preprocessing\launcher\run_calibration_workflow.py `
+  .\data\calibration_dataset `
+  --run-name calib_run_01 `
+  --stop-after preprocess
+```
+
+### A.5 Run pose recovery / transform reading
+
+```powershell
+python .\rosbag_preprocessing\launcher\run_transform_reading_workflow.py `
+  .\data\movingtest1.bag `
+  --image-topic /camera/image/compressed `
+  --gps-topic /fix
+```
+
+### A.6 Run local YOLO inference
+
+```powershell
+python .\fusion\run_yolo_inference.py `
+  --pose-recovery-run-dir .\rosbag_preprocessing\outputs\pose_recovery\<run_name> `
+  --runtime local `
+  --local-device 0 `
+  --weights ..\Colab\best.pt
+```
+
+### A.7 Let the inference stage auto-select local GPU or Colab fallback
+
+```powershell
+python .\fusion\run_yolo_inference.py `
+  --pose-recovery-run-dir .\rosbag_preprocessing\outputs\pose_recovery\<run_name> `
+  --runtime auto `
+  --weights ..\Colab\best.pt
+```
+
+### A.8 Prepare a Colab bundle explicitly
+
+```powershell
+python .\fusion\run_yolo_inference.py `
+  --pose-recovery-run-dir .\rosbag_preprocessing\outputs\pose_recovery\<run_name> `
+  --runtime colab `
+  --weights ..\Colab\best.pt
+```
+
+### A.9 Import completed Colab outputs back into the run folder
+
+```powershell
+python .\fusion\import_colab_inference_results.py `
+  --pose-recovery-run-dir .\rosbag_preprocessing\outputs\pose_recovery\<run_name> `
+  --colab-run-root .\rosbag_preprocessing\outputs\pose_recovery\<run_name>\yolo_inference\colab_bundle
+```
+
+### A.10 Run camera-LiDAR semantic fusion
+
+```powershell
+python .\fusion\fuse_masks_to_slam.py `
+  --intrinsics-json .\fusion\sample_intrinsics.json `
+  --extrinsics-json .\fusion\sample_extrinsics.json `
+  --pose-csv .\rosbag_preprocessing\outputs\pose_recovery\<run_name>\tf_camera_out.csv `
+  --image-timestamps-csv .\rosbag_preprocessing\outputs\pose_recovery\<run_name>\image_timestamps.csv `
+  --point-cloud .\rosbag_preprocessing\outputs\pose_recovery\<run_name>\pcd\scans.pcd `
+  --mask-dir .\rosbag_preprocessing\outputs\pose_recovery\<run_name>\yolo_inference\masks_npz `
+  --meta-dir .\rosbag_preprocessing\outputs\pose_recovery\<run_name>\yolo_inference\meta_json `
+  --output-dir .\fusion\outputs\<fusion_run>
+```
+
+Headless mode:
+
+```powershell
+python .\fusion\fuse_masks_to_slam.py ... --no-visualize
+```
+
+### A.11 Run GPS georeferencing
+
+```powershell
+python .\fusion\georeference_from_tf_gps.py `
+  --tf-gps-csv .\rosbag_preprocessing\outputs\pose_recovery\<run_name>\tf_gps_out.csv `
+  --objects-json .\fusion\outputs\<fusion_run>\fused_objects.json `
+  --output-dir .\fusion\outputs\<fusion_run>\gps
+```
+
+With an explicit GPS-to-LiDAR lever arm:
+
+```powershell
+python .\fusion\georeference_from_tf_gps.py `
+  --tf-gps-csv .\rosbag_preprocessing\outputs\pose_recovery\<run_name>\tf_gps_out.csv `
+  --objects-json .\fusion\outputs\<fusion_run>\fused_objects.json `
+  --gps-to-lidar-offset-body 0.10,0.00,0.35 `
+  --output-dir .\fusion\outputs\<fusion_run>\gps
+```
+
+### A.12 Convert generated powerline outputs into a portable overlay JSON
+
+```powershell
+python .\fusion\export_powerlines_to_leaflet.py `
+  --wires-npz .\wires_points.npz `
+  --wire-info-json .\wire_info.json `
+  --ground-points-npz .\ground_points.npz `
+  --output-json .\fusion\outputs\<run>\eng498_powerlines_overlay.json
+```
+
+## Appendix B. Example Directory Trees
+
+The exact contents vary by run, but the trees below show the expected shape of
+the most important generated folders.
+
+### B.1 Pose-recovery run
+
+```text
+rosbag_preprocessing/
+└── outputs/
+    └── pose_recovery/
+        └── movingtest1_20260406_123456_12345/
+            ├── image_timestamps.csv
+            ├── tf_camera_out.csv
+            ├── tf_gps_out.csv
+            ├── images/
+            │   ├── frame_000001.jpg
+            │   ├── frame_000002.jpg
+            │   └── ...
+            ├── logs/
+            │   ├── fastlio.log
+            │   ├── roscore.log
+            │   ├── rosbag.log
+            │   └── sampler.log
+            ├── pcd/
+            │   └── scans.pcd
+            └── yolo_inference/
+                ├── inference_manifest.json
+                ├── masks_npz/
+                ├── meta_json/
+                ├── pred_images/
+                ├── combined_class_masks/
+                └── colab_bundle/
+```
+
+### B.2 Fusion output run
+
+```text
+fusion/
+└── outputs/
+    └── fusion_run_01/
+        ├── fused_semantic_map.ply
+        ├── fused_semantic_labels.npz
+        ├── fused_objects.json
+        ├── pole_neighbor_distances.json
+        └── gps/
+            ├── gps_alignment.json
+            ├── tf_gps_georeferenced.csv
+            ├── fused_objects_georeferenced.json
+            └── eng498_powerlines_overlay_georeferenced.json
+```
+
+### B.3 Colab bundle
+
+```text
+<pose_run>/yolo_inference/colab_bundle/
+├── colab_inference_config.json
+├── image_timestamps.csv
+├── run_inference_colab.py
+├── yolo_inference_common.py
+├── images/
+├── pred_images/
+├── masks_npz/
+├── meta_json/
+└── combined_class_masks/
+```
+
+## Appendix C. Parameter Reference Tables
+
+The tables below summarize the most important user-tunable parameters in the
+main backend scripts.
+
+### C.1 `rosbag_preprocessing/launcher/run_pipeline.py`
+
+| Parameter | Meaning |
+| --- | --- |
+| `mode` | One of `calibration`, `pose-recovery`, or `bash` |
+| trailing `args` | Passed through to the selected container workflow after path normalization |
+
+### C.2 `run_pose_recovery_camera_gps.sh`
+
+| Parameter | Meaning |
+| --- | --- |
+| positional `bag_path` | Input ROS bag |
+| `--output-root` | Output root for pose-recovery run folders |
+| `--image-topic` | Manual override for the compressed or raw image topic |
+| `--gps-topic` | Manual override for the `NavSatFix` topic |
+| `--master-port` | Alternate ROS master port |
+| `--remap` | Additional rosbag replay remapping rules |
+
+### C.3 `tf_sample_camera_gps.py`
+
+| Parameter | Meaning |
+| --- | --- |
+| `--camera-out-csv` | Output CSV for image-triggered TF samples |
+| `--gps-out-csv` | Output CSV for GPS-triggered TF samples |
+| `--image-output-dir` | JPG export directory |
+| `--image-timestamps-csv` | CSV receiving JPG filename/timestamp rows |
+| `--target` | TF target frame, default `camera_init` |
+| `--source` | TF source frame, default `body` |
+| `--discovery-timeout-wall-sec` | Topic auto-detection timeout |
+| `--max-wait-per-sample-wall-sec` | Maximum wall-clock wait for replay time to reach an event |
+| `--retry-attempts` | TF lookup retry count after time is reached |
+| `--stall-wall-sec` | Replay stall threshold used to detect bag completion |
+
+### C.4 `fusion/run_yolo_inference.py`
+
+| Parameter | Meaning |
+| --- | --- |
+| `--pose-recovery-run-dir` | Source run folder containing `images/` and `image_timestamps.csv` |
+| `--runtime` | `auto`, `local`, or `colab` |
+| `--weights` | Explicit YOLO segmentation weights path |
+| `--output-dir` | Override for the inference output root |
+| `--local-device` | CUDA device selector such as `0` or `cuda:0` |
+| `--imgsz` | YOLO inference image size |
+| `--conf` | Detection confidence threshold |
+| `--preferred-colab-gpu` | Preferred GPU name to report in Colab |
+| `--colab-drive-weights-path` | Alternate Drive path for weights when not bundling them |
+| `--no-include-weights-in-colab-bundle` | Skip copying local weights into the bundle |
+| `--no-save-annotated` | Do not write annotated JPGs |
+| `--no-save-combined-masks` | Do not write combined per-class mask PNGs |
+
+### C.5 `fusion/fuse_masks_to_slam.py`
+
+| Parameter | Meaning |
+| --- | --- |
+| `--intrinsics-json` | Camera intrinsics JSON |
+| `--extrinsics-json` | LiDAR-to-camera extrinsics JSON |
+| `--pose-csv` | Pose CSV used for map-to-camera projection |
+| `--image-timestamps-csv` | Image timestamp CSV |
+| `--point-cloud` | Global SLAM point cloud |
+| `--mask-dir` | Directory containing `*_masks.npz` |
+| `--meta-dir` | Directory containing `*_meta.json` |
+| `--output-dir` | Fusion output directory |
+| `--time-column` | Pose CSV time column to use |
+| `--time-offset-sec` | Global image-to-pose time shift |
+| `--allowed-classes` | Comma-separated class allow list |
+| `--reject-classes` | Comma-separated class reject list |
+| `--min-vote-to-keep` | Minimum number of frame votes required to keep a point label |
+| `--knn-cluster` | K-neighbor count used for adaptive epsilon estimation |
+| `--eps-factor` | Multiplier used when turning neighbor spacing into clustering epsilon |
+| `--min-cluster-points` | Minimum points required for DBSCAN/Euclidean clusters |
+| `--min-keep-cluster` | Minimum projected points before dense-cluster filtering is attempted |
+| `--stat-nb-neighbors` | Statistical outlier removal neighborhood size |
+| `--stat-std-ratio` | Statistical outlier removal standard-deviation ratio |
+| `--min-pole-spacing-m` | Lower bound for pole neighbor links |
+| `--max-pole-spacing-m` | Upper bound for pole neighbor links |
+| `--pole-neighbor-top-k` | Per-pole nearest-neighbor candidate count |
+| `--pole-spacing-adaptive-multiplier` | Adaptive pole spacing multiplier derived from median nearest-neighbor spacing |
+| `--axis-length` | Camera-frame axis length for visualization |
+| `--no-visualize` | Disable Open3D visualization |
+
+### C.6 `fusion/georeference_from_tf_gps.py`
+
+| Parameter | Meaning |
+| --- | --- |
+| `--tf-gps-csv` | Input GPS/TF CSV |
+| `--objects-json` | Fused object JSON to georeference |
+| `--powerlines-json` | Powerline overlay JSON to georeference |
+| `--output-dir` | Root output folder for georeferencing products |
+| `--transform-output-json` | Optional explicit output path for `gps_alignment.json` |
+| `--objects-output-json` | Optional explicit output path for the georeferenced objects JSON |
+| `--powerlines-output-json` | Optional explicit output path for the georeferenced powerlines JSON |
+| `--aligned-csv-output` | Optional explicit output path for the aligned CSV report |
+| `--gps-to-lidar-offset-body` | Lever arm vector in body coordinates as `x,y,z` |
+| `--gps-to-lidar-offset-json` | Alternate JSON file containing `gps_to_lidar_xyz_m` |
+| `--min-fix-status` | Minimum GPS fix status to accept |
+| `--max-horizontal-cov-m2` | Maximum horizontal covariance allowed |
+| `--outlier-threshold-m` | Minimum residual threshold used during robust fitting |
+| `--allow-scale` | Allow uniform XY scale fitting instead of rigid-only XY |
+| `--native-mode` | `auto`, `on`, or `off` for the geospatial accelerator |
