@@ -28,6 +28,14 @@ Required:
 - Docker Desktop with WSL integration enabled
 - Python on Windows for the launcher scripts
 
+The recommended Windows-side Python environment for the repo is installed from
+the project root with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ..\install_repo_python_env.ps1 `
+  -Python C:\path\to\python.exe
+```
+
 Required for the calibration GUIs:
 
 - WSLg support

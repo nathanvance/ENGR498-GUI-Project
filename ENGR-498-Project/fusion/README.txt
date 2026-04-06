@@ -25,7 +25,7 @@ The script:
 
 Environment
 -----------
-Run the Fusion scripts from the `Fusion` folder with any Python environment
+Run the Fusion scripts from the `fusion` folder with any Python environment
 that has the required packages installed. If you want to force a specific
 interpreter for the Leaflet helper, set:
 
@@ -38,15 +38,19 @@ including:
 - open3d
 - opencv-python
 
-To recreate the local YOLO inference environment in a venv, run:
+To recreate the repo's Windows-side Python environment in a venv, run from the
+`ENGR-498-Project` folder:
 
-  powershell -ExecutionPolicy Bypass -File .\install_local_inference_env.ps1 `
-    -Python ..\..\SeniorDesignProject\Scripts\python.exe
+  powershell -ExecutionPolicy Bypass -File .\install_repo_python_env.ps1 `
+    -Python C:\path\to\python.exe
 
 The actual virtual environment directory is intentionally not committed to the
 repo. Portability is handled through:
-- `requirements-local-inference.txt`
-- `requirements-local-inference-lock.txt`
+- `..\requirements-repo-python.txt`
+- `..\requirements-repo-python-lock.txt`
+- optional MATLAB bridge files:
+  - `..\requirements-repo-python-matlab.txt`
+  - `..\requirements-repo-python-matlab-lock.txt`
 
 On first run, the script builds a native C++ DLL for fast point projection and
 mask lookup. Visual Studio Build Tools must be installed.
@@ -70,15 +74,6 @@ Files in This Folder
 
 - colab\run_inference_colab.py
   Colab-side inference entrypoint for prepared `colab_bundle` folders.
-
-- requirements-local-inference.txt
-  Reproducible local inference environment spec for the active Python venv.
-
-- requirements-local-inference-lock.txt
-  Exact package snapshot from the currently validated local inference venv.
-
-- install_local_inference_env.ps1
-  Convenience installer for the local inference environment.
 
 - native\
   Native C++ acceleration code and build script.
@@ -235,8 +230,8 @@ Supported runtime modes:
 
 Local runtime notes:
 - local inference expects a YOLO segmentation weights file such as `best.pt`
-- the repo includes `requirements-local-inference.txt` for recreating the
-  local inference environment
+- use the repo-level installer `..\install_repo_python_env.ps1` to recreate
+  the Windows-side Python environment
 - local auto-detect treats CUDA devices with compute capability 7.0 or newer
   as "modern"
 - `--local-device` lets you explicitly choose a local GPU such as `0` or
