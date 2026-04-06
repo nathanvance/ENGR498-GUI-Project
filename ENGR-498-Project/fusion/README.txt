@@ -38,6 +38,16 @@ including:
 - open3d
 - opencv-python
 
+To recreate the local YOLO inference environment in a venv, run:
+
+  powershell -ExecutionPolicy Bypass -File .\install_local_inference_env.ps1 `
+    -Python ..\..\SeniorDesignProject\Scripts\python.exe
+
+The actual virtual environment directory is intentionally not committed to the
+repo. Portability is handled through:
+- `requirements-local-inference.txt`
+- `requirements-local-inference-lock.txt`
+
 On first run, the script builds a native C++ DLL for fast point projection and
 mask lookup. Visual Studio Build Tools must be installed.
 
@@ -46,6 +56,29 @@ Files in This Folder
 --------------------
 - fuse_masks_to_slam.py
   Main fusion pipeline.
+
+- run_yolo_inference.py
+  Runs local YOLO segmentation directly on the JPG output produced by
+  rosbag_preprocessing, or prepares a Colab fallback bundle.
+
+- import_colab_inference_results.py
+  Imports Colab-generated masks and metadata back into a local Fusion run
+  folder.
+
+- yolo_inference_common.py
+  Shared helpers for exporting Fusion-ready masks and metadata.
+
+- colab\run_inference_colab.py
+  Colab-side inference entrypoint for prepared `colab_bundle` folders.
+
+- requirements-local-inference.txt
+  Reproducible local inference environment spec for the active Python venv.
+
+- requirements-local-inference-lock.txt
+  Exact package snapshot from the currently validated local inference venv.
+
+- install_local_inference_env.ps1
+  Convenience installer for the local inference environment.
 
 - native\
   Native C++ acceleration code and build script.
@@ -126,6 +159,10 @@ Expected Inputs
    - masks_npz directory with *_masks.npz
    - meta_json directory with *_meta.json
 
+   These can now be produced either:
+   - locally by `run_yolo_inference.py`
+   - or in Colab by `colab\run_inference_colab.py`
+
 7. GPS / TF georeferencing CSV
    Produced by the WSL event-driven sampler as:
    - tf_gps_out.csv
@@ -168,6 +205,99 @@ Current Behavior
 - Exports one combined JSON with all detected objects.
 - GPS fields start as placeholders and are later filled by the GPS
   georeferencing stage.
+
+
+YOLO Inference Workflow
+-----------------------
+The rosbag preprocessing stage now writes camera frames as JPG files in:
+
+  ..\rosbag_preprocessing\outputs\pose_recovery\<run_name>\images\
+
+with matching timestamps in:
+
+  ..\rosbag_preprocessing\outputs\pose_recovery\<run_name>\image_timestamps.csv
+
+Those JPGs are the direct inputs to the YOLO inference scripts in this folder.
+
+Main entrypoint:
+
+  .\run_yolo_inference.py
+
+Supported runtime modes:
+- `auto`
+  Use a modern local NVIDIA CUDA GPU when available. If a suitable local GPU
+  or local runtime is not available, prepare a Colab fallback bundle instead.
+- `local`
+  Force the local GPU path. This is the explicit option for users who want to
+  use the local GPU instead of auto-detect.
+- `colab`
+  Skip local inference and prepare a Colab bundle immediately.
+
+Local runtime notes:
+- local inference expects a YOLO segmentation weights file such as `best.pt`
+- the repo includes `requirements-local-inference.txt` for recreating the
+  local inference environment
+- local auto-detect treats CUDA devices with compute capability 7.0 or newer
+  as "modern"
+- `--local-device` lets you explicitly choose a local GPU such as `0` or
+  `cuda:0`
+
+Colab runtime notes:
+- the bundled Colab entrypoint is `colab\run_inference_colab.py`
+- it prefers an `A100` by policy and reports whether Colab actually assigned
+  one
+- Colab GPU type cannot be forced purely from notebook code; if an A100 is not
+  assigned, the script uses the available CUDA GPU instead
+
+Recommended local command:
+
+  python .\run_yolo_inference.py `
+    --pose-recovery-run-dir ..\rosbag_preprocessing\outputs\pose_recovery\<run_name> `
+    --runtime auto `
+    --weights ..\..\Colab\best.pt
+
+To force local GPU usage:
+
+  python .\run_yolo_inference.py `
+    --pose-recovery-run-dir ..\rosbag_preprocessing\outputs\pose_recovery\<run_name> `
+    --runtime local `
+    --local-device 0 `
+    --weights ..\..\Colab\best.pt
+
+If the script falls back to Colab, it prepares:
+
+  <pose_run>\yolo_inference\colab_bundle\
+
+That bundle contains:
+- `images\`
+- `image_timestamps.csv`
+- `colab_inference_config.json`
+- `run_inference_colab.py`
+- `yolo_inference_common.py`
+- optionally the YOLO weights file if it was available locally
+
+It also writes:
+
+  <pose_run>\yolo_inference\colab_bundle.zip
+
+To run the bundle in Colab:
+
+  %run /content/drive/MyDrive/.../colab_bundle/run_inference_colab.py `
+    --run-root /content/drive/MyDrive/.../colab_bundle
+
+After Colab finishes, bring the results back locally with:
+
+  python .\import_colab_inference_results.py `
+    --pose-recovery-run-dir ..\rosbag_preprocessing\outputs\pose_recovery\<run_name> `
+    --colab-run-root <downloaded_or_synced_colab_bundle>
+
+The resulting local folders are:
+- `pred_images\`
+- `masks_npz\`
+- `meta_json\`
+- `combined_class_masks\`
+
+These outputs can then be passed directly to `fuse_masks_to_slam.py`.
 
 
 Outputs
