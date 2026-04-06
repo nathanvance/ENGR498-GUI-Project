@@ -39,25 +39,3 @@ files to the next stage. Those file contracts are the backbone of the system.
 7. [Developer Guide](07-developer-guide.md)
 8. [Validation And Troubleshooting](08-validation-and-troubleshooting.md)
 9. [Command Cookbook And Glossary](09-command-cookbook-and-glossary.md)
-
-## Suggested Reading Order
-
-For onboarding:
-
-1. Start here.
-2. Read [System Overview](01-system-overview.md).
-3. Read [File Contracts](06-file-contracts.md).
-4. Read [Developer Guide](07-developer-guide.md).
-5. Use [Command Cookbook And Glossary](09-command-cookbook-and-glossary.md)
-   while running the system.
-
-For debugging:
-
-1. Find the failing stage.
-2. Open the stage-specific page.
-3. Read [Validation And Troubleshooting](08-validation-and-troubleshooting.md).
-
-For changing behavior:
-
-1. Read [Developer Guide](07-developer-guide.md).
-2. Use the "where to change behavior" matrix there.
