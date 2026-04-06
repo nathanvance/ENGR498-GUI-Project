@@ -23,7 +23,11 @@ pbaspect([20 1 2])
 xlabel('\itX^{''}','FontSize',10,'FontName','times new Roman')
 ylabel('\itY^{''}','FontSize',10,'FontName','times new Roman')
 zlabel('\itZ^{''}','FontSize',10,'FontName','times new Roman')
-print(gcf,'-dpdf','-r300','C:\Users\Lily\Desktop\linebreaks.pdf');
+out_dir = fullfile(pwd, 'outputs', 'matlab_extract');
+if ~exist(out_dir, 'dir')
+    mkdir(out_dir);
+end
+print(gcf,'-dpdf','-r300', fullfile(out_dir,'linebreaks.pdf'));
 cf1 = catenary(C1(:,1),C1(:,3));
 cf_x = rotated(:,1);
 cf_z = cf1(cf_x);
@@ -37,7 +41,7 @@ c_z = cf2(c_x);
 c_y = zeros(size(c_x,1),1);
 hold on
 plot3(c_x,c_y,c_z,'r-','linewidth',1);
-print(gcf,'-dpdf','-r300','C:\Users\Lily\Desktop\linefit.pdf');
+print(gcf,'-dpdf','-r300', fullfile(out_dir,'linefit.pdf'));
 
 minx = min(C3(:,1));
 maxx = max(C3(:,1));
@@ -46,5 +50,5 @@ gap_y = zeros(size(gap_x,2),1);
 gap_z = cf2(gap_x');
 hold on
 plot3(gap_x,gap_y,gap_z,'ro');
-print(gcf,'-dpdf','-r300','C:\Users\Lily\Desktop\points_gap.pdf');
+print(gcf,'-dpdf','-r300', fullfile(out_dir,'points_gap.pdf'));
 end

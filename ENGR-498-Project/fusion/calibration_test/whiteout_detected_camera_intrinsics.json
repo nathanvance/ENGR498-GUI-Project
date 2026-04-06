@@ -1,0 +1,21 @@
+{
+  "fx": 3859.773904461573,
+  "fy": 3863.269269065303,
+  "cx": 2835.9372989172875,
+  "cy": 2118.1993169320262,
+  "width": 5712,
+  "height": 4284,
+  "distortion": [
+    0.051052283158699585,
+    0.7428709432410722,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "source_csv": "calibration_test/whiteout_detected_camera_intrinsics.csv",
+  "num_images_used": 11,
+  "rms_reprojection_error": 0.30752912265236965
+}

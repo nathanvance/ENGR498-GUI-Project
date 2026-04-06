@@ -7,6 +7,7 @@ from datetime import datetime
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget
 
+from project_paths import ASSETS_DIR
 from views.lidar_dashboard import DashboardView
 from views.lidar_dashboard_stepbystep import StepByStepDashboard
 from PreProcessing_GUI.point_cloud_filter_gui import PointCloudFilterViewer
@@ -23,8 +24,8 @@ class DashboardTestWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
 
-        self.auto_dashboard = DashboardView(assets_path="ENGR-498-Project/assets")
-        self.step_dashboard = StepByStepDashboard(assets_path="ENGR-498-Project/assets")
+        self.auto_dashboard = DashboardView(assets_path=str(ASSETS_DIR))
+        self.step_dashboard = StepByStepDashboard(assets_path=str(ASSETS_DIR))
         self.filter_viewer = PointCloudFilterViewer(filename=None)
 
         self.stack.addWidget(self.auto_dashboard)   # index 0
@@ -70,7 +71,7 @@ class DashboardTestWindow(QMainWindow):
         self.switch_to(self.filter_viewer)
 
     def setup_demo_assets(self):
-        assets_path = Path("assets")
+        assets_path = ASSETS_DIR
         assets_path.mkdir(exist_ok=True)
 
         scan1 = assets_path / "scan_001"
@@ -86,7 +87,7 @@ class DashboardTestWindow(QMainWindow):
                 "wire_extraction": "pending",
                 "fusion": "pending"
             },
-            "files": "C:\\Users\\henry\\OneDrive\\Documents\\GitHub\\ENGR498-GUI-Project\\ENGR-498-Project\\assets\\scan_001\\processed\\slam\\lt1.las",
+            "files": "assets/scan_001/processed/slam/lt1.las",
             "wire_params": {
                 "R": 0.5,
                 "angleThr": 10,
@@ -110,7 +111,7 @@ class DashboardTestWindow(QMainWindow):
                 "wire_extraction": "pending",
                 "fusion": "pending"
             },
-            "files": "C:\\Users\\henry\\OneDrive\\Documents\\GitHub\\ENGR498-GUI-Project\\ENGR-498-Project\\assets\\scan_002\\processed\\slam\\lt3.las",
+            "files": "assets/scan_002/processed/slam/lt3.las",
             "wire_params": {
                 "R": 0.6,
                 "angleThr": 12,
@@ -137,7 +138,7 @@ class DashboardTestWindow(QMainWindow):
         if not bag_path:
             return  # User cancelled
 
-        assets_path = Path("ENGR-498-Project/assets")
+        assets_path = ASSETS_DIR
         assets_path.mkdir(exist_ok=True)
 
         # ---------------------------------------------------

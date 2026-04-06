@@ -1,39 +1,48 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
 import laspy
 import numpy as np
 
-inp = r"C:\Users\henry\Downloads\LAW2.las"
-#C:\Users\henry\Downloads\movingtest1_filtered_with_normals_matlab.las"
-out = r"C:\Users\henry\Downloads\LAW2_fixed.las"
-#C:\Users\henry\Downloads\movingtest1_filtered_with_normals_matlab_fixed.las"
 
-las = laspy.read(inp)
+def fix_las_format(input_path: Path, output_path: Path) -> None:
+    las = laspy.read(input_path)
 
-# --- force valid returns ---
-las.return_number[:] = 1
-las.number_of_returns[:] = 1
+    las.return_number[:] = 1
+    las.number_of_returns[:] = 1
 
-# --- remove RGB ---
-for c in ("red","green","blue"):
-    if c in las.point_format.dimension_names:
-        getattr(las, c)[:] = 0
+    for color_dim in ("red", "green", "blue"):
+        if color_dim in las.point_format.dimension_names:
+            getattr(las, color_dim)[:] = 0
 
-# --- match intensity distribution ---
-i = las.intensity.astype(float)
-i = (i - i.min()) / (i.max() - i.min() + 1e-9)
-las.intensity = (i * 48000 + 2000).astype(np.uint16)
+    intensity = las.intensity.astype(float)
+    intensity = (intensity - intensity.min()) / (intensity.max() - intensity.min() + 1e-9)
+    las.intensity = (intensity * 48000 + 2000).astype(np.uint16)
 
-# --- shift coordinates to large-offset space (MATLAB-like) ---
-x = np.asarray(las.x)
-y = np.asarray(las.y)
-z = np.asarray(las.z)
+    xyz = np.column_stack((np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)))
+    offset = np.array([300000, 6800000, 130], dtype=float)
 
-offset = np.array([300000, 6800000, 130])
+    las.header.offsets = offset
+    las.x = xyz[:, 0] + offset[0]
+    las.y = xyz[:, 1] + offset[1]
+    las.z = xyz[:, 2] + offset[2]
 
-las.header.offsets = offset
-las.x = x + offset[0]
-las.y = y + offset[1]
-las.z = z + offset[2]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    las.write(output_path)
 
-las.write(out)
 
-print("FINAL FIXED:", out)
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Normalize a LAS file into the MATLAB-friendly format used by the powerline tooling.")
+    parser.add_argument("input_las")
+    parser.add_argument("output_las")
+    args = parser.parse_args()
+
+    fix_las_format(Path(args.input_las), Path(args.output_las))
+    print(f"FINAL FIXED: {args.output_las}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
