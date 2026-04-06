@@ -1,0 +1,28 @@
+services:
+  portable-ros-stack:
+    image: senior-design/portable-ros-stack:noetic
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: host
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+    gpus: all
+    environment:
+      DISPLAY: ${DISPLAY:-}
+      WAYLAND_DISPLAY: ${WAYLAND_DISPLAY:-}
+      XDG_RUNTIME_DIR: ${PORTABLE_ROS_XDG_RUNTIME_DIR:-/run/user/1000}
+      PULSE_SERVER: ${PULSE_SERVER:-}
+      QT_X11_NO_MITSHM: "1"
+      PORTABLE_ROS_WORKSPACE_ROOT: /workspace
+      PORTABLE_ROS_OUTPUT_ROOT: /workspace/outputs
+      PORTABLE_ROS_CALIBRATION_OUTPUT_ROOT: /workspace/outputs/calibration
+      PORTABLE_ROS_POSE_OUTPUT_ROOT: /workspace/outputs/pose_recovery
+    volumes:
+      - .:/workspace
+      - ${PORTABLE_ROS_WINDOWS_ROOT:-/mnt/c}:${PORTABLE_ROS_WINDOWS_ROOT:-/mnt/c}
+      - ${PORTABLE_ROS_WSLG_ROOT:-/mnt/wslg}:${PORTABLE_ROS_WSLG_ROOT:-/mnt/wslg}
+      - ${PORTABLE_ROS_WSLG_RUNTIME_DIR:-/mnt/wslg/runtime-dir}:${PORTABLE_ROS_XDG_RUNTIME_DIR:-/run/user/1000}
+      - ${PORTABLE_ROS_WSL_LIB_ROOT:-/usr/lib/wsl}:${PORTABLE_ROS_WSL_LIB_ROOT:-/usr/lib/wsl}
+      - ${PORTABLE_ROS_X11_SOCKET_DIR:-/tmp/.X11-unix}:${PORTABLE_ROS_X11_SOCKET_DIR:-/tmp/.X11-unix}

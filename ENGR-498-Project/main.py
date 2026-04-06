@@ -1,10 +1,12 @@
 # main.py
 import sys
 import threading
+from pathlib import Path
 import matlab.engine
 import numpy as np
 from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget
 
+from project_paths import MATLAB_EXTRACT_DIR
 from views.dashboard_view import DashboardView
 
 # IMPORT EACH VIEWER WITH A UNIQUE NAME
@@ -66,11 +68,7 @@ class MainWindow(QMainWindow):
             print("\n--- MATLAB extraction started ---")
 
             eng = matlab.engine.start_matlab()
-            eng.addpath(
-                r"C:\Users\henry\Downloads\3DLiDAR-main\3DLiDAR-main\ExtractPowerLine",
-                #r"C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\ENGR-498-Project\Matlab_ExtractPowerLine",
-                nargout=0
-            )
+            eng.addpath(str(MATLAB_EXTRACT_DIR), nargout=0)
 
             PL, poly, ground_pts = eng.demo_extract_powerline(las_path, nargout=3)
 

@@ -1,0 +1,35 @@
+{
+  "pipeline": "fuse_masks_to_slam",
+  "source_objects_json": "calibration_test/fused_objects.json",
+  "metadata": {
+    "num_poles": 2,
+    "min_spacing_m": 5.0,
+    "max_spacing_m": 90.0,
+    "adaptive_max_spacing_m": 50.39602606418779,
+    "num_distance_links": 1
+  },
+  "distances": [
+    {
+      "from_object_name": "pole_01",
+      "to_object_name": "pole_02",
+      "from_centroid_map_xyz": [
+        19.092855487188736,
+        2.539370516344988,
+        -2.35227159058149
+      ],
+      "to_centroid_map_xyz": [
+        13.544382076556584,
+        24.764539343479388,
+        -0.3544555166384242
+      ],
+      "midpoint_map_xyz": [
+        16.318618781872658,
+        13.651954929912188,
+        -1.353363553609957
+      ],
+      "horizontal_distance_m": 22.90728457463081,
+      "delta_z_m": 1.9978160739430657,
+      "distance_3d_m": 22.994237444377752
+    }
+  ]
+}

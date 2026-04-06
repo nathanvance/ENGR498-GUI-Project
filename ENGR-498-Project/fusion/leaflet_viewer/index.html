@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fusion And Powerline Map</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  >
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <h1>Fusion And Powerline Map</h1>
+      <p class="subtitle">Leaflet viewer for <code>fused_objects.json</code> plus optional generated powerline overlays</p>
+
+      <section class="panel">
+        <div class="panel-row">
+          <span class="label">Data</span>
+          <code id="data-path"></code>
+        </div>
+        <div class="panel-row">
+          <span class="label">Wires</span>
+          <code id="powerline-path"></code>
+        </div>
+        <div class="panel-row">
+          <span class="label">Mode</span>
+          <span id="map-mode">Loading</span>
+        </div>
+        <div class="panel-row">
+          <span class="label">Objects</span>
+          <span id="object-count">0</span>
+        </div>
+        <div class="panel-row">
+          <span class="label">Lines</span>
+          <span id="powerline-count">0</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Legend</h2>
+        <div id="legend"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Features</h2>
+        <div class="toolbar">
+          <input id="search-box" type="search" placeholder="Filter by object, class, or powerline">
+        </div>
+        <div id="object-list" class="object-list"></div>
+      </section>
+    </aside>
+
+    <main class="map-shell">
+      <div id="map"></div>
+    </main>
+  </div>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script src="./app.js"></script>
+</body>
+</html>

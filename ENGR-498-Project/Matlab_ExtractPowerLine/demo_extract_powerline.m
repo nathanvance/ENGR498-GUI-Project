@@ -249,7 +249,7 @@ end
 for i = 1:size(powerLines_pro,2)
     powerLines_pro_new(i).Location = insert_3D(powerLines_pro(i).Location, 0.1);
 end
-% save('C:\Users\Lily\Desktop\PLM','powerLines_pro_new')
+% save(fullfile(pwd, 'PLM.mat'),'powerLines_pro_new')
 
 % powerLines_pro_new = powerLines_pro;
 % visualization

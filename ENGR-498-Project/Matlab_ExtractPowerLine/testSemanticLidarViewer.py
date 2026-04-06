@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import laspy
 import pyvista as pv
@@ -15,10 +17,15 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 from pyvistaqt import QtInteractor
-        
-LAS_PATH = r"C:\Users\henry\Downloads\slt3_filtered.las"
-#"C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\ENGR-498-Project\assets\scan_002\processed\filtered\cloud_filtered.las"
-#C:\Users\henry\Downloads\law2-matched-filtered-classifier-powerline-flainet\law2_matched_filtered_-_classifier_-_powerline_flainet\law2_matched_filtered.las"
+
+from project_paths import (
+    DEFAULT_GROUND_POINTS_NPZ_PATH,
+    DEFAULT_LAS_PATH,
+    DEFAULT_WIRES_NPZ_PATH,
+    DEFAULT_WIRE_INFO_JSON_PATH,
+)
+
+LAS_PATH = DEFAULT_LAS_PATH
 
 CLASS_NAME_MAP = {
     0: "Not classified",
@@ -421,9 +428,9 @@ class SemanticViewer(QWidget):
     # -----------------------
     # Ground helpers
     # -----------------------
-    def load_ground_points(self, path="ground_points.npz"):
+    def load_ground_points(self, path=DEFAULT_GROUND_POINTS_NPZ_PATH):
         try:
-            data = np.load(path, allow_pickle=True)
+            data = np.load(Path(path), allow_pickle=True)
             # expecting either single array or keyed array 'ground_points'
             if "ground_points" in data.files:
                 pts = np.asarray(data["ground_points"])  # (M,3)
@@ -524,12 +531,11 @@ class SemanticViewer(QWidget):
     # for testing, I'm hardcoding the path to the wires file that I know works.
     #TODO - make this more flexible and connect it to the dashboard selection.
     def load_saved_wire_files(self,
-                              points_npz_path=r"C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\wires_points.npz",
-                              info_json_path=r"C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\wire_info.json",
-                              ground_npz_path=r"C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\ground_points.npz"):
-                              #C:\Users\henry\Downloads\law2-matched-filtered-classifier-powerline-flainet\law2_matched_filtered_-_classifier_-_powerline_flainet\ground_points.npz"):
+                              points_npz_path=DEFAULT_WIRES_NPZ_PATH,
+                              info_json_path=DEFAULT_WIRE_INFO_JSON_PATH,
+                              ground_npz_path=DEFAULT_GROUND_POINTS_NPZ_PATH):
         # load wires 
-        npz = np.load(points_npz_path, allow_pickle=True)
+        npz = np.load(Path(points_npz_path), allow_pickle=True)
 
         # Extract MATLAB-style struct
         wires_struct = npz["wires"].item()
@@ -537,7 +543,7 @@ class SemanticViewer(QWidget):
         # This is already a list of wire point arrays
         locations = [np.array(w, dtype=float) for w in wires_struct["Location"]]
         # load poly info
-        with open(info_json_path, "r") as f:
+        with open(Path(info_json_path), "r") as f:
             poly = json.load(f)
 
         # load ground points & kdtree (optional)

@@ -1,4 +1,5 @@
 # views/semantic_viewer.py
+from pathlib import Path
 import numpy as np
 import laspy
 import pyvista as pv
@@ -10,9 +11,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from pyvistaqt import QtInteractor
 
-# Hardcoded path per Option 2 — update to your actual LAS path
-LAS_PATH = r"C:\Users\henry\Downloads\law2-matched-filtered-classifier-powerline-flainet\law2_matched_filtered_-_classifier_-_powerline_flainet\law2_matched_filtered.las"
-#"C:\Users\henry\Downloads\ENGR-498-Project\assets\testSemanticPC.las"
+from project_paths import DEFAULT_LAS_PATH
+
+LAS_PATH = DEFAULT_LAS_PATH
 
 # Map class ID -> human readable name (optional)
 CLASS_NAME_MAP = {
@@ -23,170 +24,147 @@ CLASS_NAME_MAP = {
     5: "High Vegetation"
 }
 
+
 def load_las_xyz_and_classes(path):
     las = laspy.read(path)
     xyz = np.vstack((las.x, las.y, las.z)).T
-    classes = las.classification
+    try:
+        classes = las.classification
+    except Exception:
+        classes = np.zeros(xyz.shape[0], dtype=int)
     return xyz, classes
 
-def generate_deterministic_colors(unique_classes, seed=0):
+
+def generate_deterministic_colors(n, seed=0):
     rng = np.random.default_rng(seed)
-    colors = {}
-    for c in unique_classes:
-        # PyVista expects 0-255 ints for color arguments
-        colors[c] = tuple(int(x) for x in rng.integers(30, 230, size=3))
+    colors = [tuple(int(x) for x in rng.integers(30, 230, size=3)) for _ in range(n)]
     return colors
 
+
 class SemanticViewer(QWidget):
-    # Signal to ask MainWindow to go back to dashboard
     backRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        layout = QHBoxLayout()
+        self.setLayout(layout)
 
-        # UI layout
-        main_layout = QHBoxLayout()
-        self.setLayout(main_layout)
-
-        # Left: PyVista QtInteractor
+        # Left side: 3D viewer
         self.plotter = QtInteractor(self)
-        self.plotter.setMinimumSize(800, 600)
-        main_layout.addWidget(self.plotter, stretch=3)
+        self.plotter.setMinimumSize(900, 700)
+        layout.addWidget(self.plotter, stretch=3)
 
-        # Right: sidebar for checkboxes + back button
-        sidebar = QWidget()
-        sidebar_layout = QVBoxLayout()
-        sidebar.setLayout(sidebar_layout)
-
-        # Top row: Back button
-        top_row = QWidget()
-        top_row_layout = QHBoxLayout()
-        top_row_layout.setContentsMargins(0, 0, 0, 0)
-        top_row.setLayout(top_row_layout)
-        back_btn = QPushButton("← Back")
-        back_btn.clicked.connect(self._on_back)
-        top_row_layout.addWidget(back_btn)
-        sidebar_layout.addWidget(top_row)
+        # Right side: controls
+        side_panel = QVBoxLayout()
+        layout.addLayout(side_panel, stretch=1)
 
         title = QLabel("Semantic Classes")
-        title.setStyleSheet("font-weight: bold; font-size: 14px;")
-        sidebar_layout.addWidget(title)
+        title.setAlignment(Qt.AlignCenter)
+        side_panel.addWidget(title)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
         scroll_content = QWidget()
-        scroll_layout = QVBoxLayout()
-        scroll_content.setLayout(scroll_layout)
-        scroll.setWidget(scroll_content)
-        self.scroll_layout = scroll_layout
+        self.scroll_layout = QVBoxLayout()
+        scroll_content.setLayout(self.scroll_layout)
+        self.scroll.setWidget(scroll_content)
+        side_panel.addWidget(self.scroll)
 
-        sidebar_layout.addWidget(scroll)
-        sidebar_layout.addStretch()
-        main_layout.addWidget(sidebar, stretch=1)
+        self.back_button = QPushButton("Back")
+        self.back_button.clicked.connect(self.backRequested.emit)
+        side_panel.addWidget(self.back_button)
 
         # Storage
-        self.actors = {}     # class -> actor
-        self.checkboxes = {}
-        self.class_colors = {}
-
-        # Data placeholders
         self.xyz = None
         self.classes = None
         self.unique_classes = None
-
-    def _on_back(self):
-        # optional: clear the scene to free memory if you want
-        try:
-            self.plotter.clear()
-        except Exception:
-            pass
-        self.backRequested.emit()
+        self.class_actors = {}
+        self.class_colors = {}
+        self.class_checkboxes = {}
+        self.las_actor = None
 
     def load_las_file(self, path=LAS_PATH):
-        # Load LAS and render (path defaults to hardcoded LAS_PATH)
+        path = Path(path)
         self.xyz, self.classes = load_las_xyz_and_classes(path)
-        unique = np.unique(self.classes)
-        # Optionally filter to only known classes in CLASS_NAME_MAP
-        # If you want all classes, comment out the next line
-        self.unique_classes = np.array([c for c in unique if c in CLASS_NAME_MAP])
-        if self.unique_classes.size == 0:
-            # fallback to all classes if none match the map
-            self.unique_classes = unique
+        self.unique_classes = np.unique(self.classes)
+        self._render_class_list()
+        self._render_las_cloud()
 
-        # deterministic colors
-        self.class_colors = generate_deterministic_colors(self.unique_classes, seed=42)
-
-        # Build the scene
-        self._render_scene()
-
-    def _render_scene(self):
-        # Remove any existing actors
-        self.plotter.clear()
-        self.actors.clear()
-        # Clear sidebar layout (remove old widgets)
+    def _render_class_list(self):
+        # Clear old
         for i in reversed(range(self.scroll_layout.count())):
-            w = self.scroll_layout.itemAt(i).widget()
-            if w is not None:
-                w.setParent(None)
+            widget = self.scroll_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
 
-        # Add one actor per class (colored point cloud)
-        for c in self.unique_classes:
-            mask = (self.classes == c)
+        self.class_checkboxes = {}
+        colors = generate_deterministic_colors(len(self.unique_classes), seed=42)
+        self.class_colors = {}
+
+        for idx, cls_id in enumerate(self.unique_classes):
+            name = CLASS_NAME_MAP.get(int(cls_id), f"Class {cls_id}")
+            color = colors[idx]
+            self.class_colors[int(cls_id)] = color
+
+            row = QHBoxLayout()
+            cb = QCheckBox(f"{cls_id} - {name}")
+            cb.setChecked(True)
+            cb.stateChanged.connect(lambda state, c=int(cls_id): self._toggle_class(c, state))
+            self.class_checkboxes[int(cls_id)] = cb
+            row.addWidget(cb)
+
+            swatch = QLabel()
+            swatch.setFixedSize(16, 16)
+            swatch.setStyleSheet(
+                f"background-color: rgb({color[0]}, {color[1]}, {color[2]}); border: 1px solid #444;"
+            )
+            row.addWidget(swatch)
+
+            container = QWidget()
+            container.setLayout(row)
+            self.scroll_layout.addWidget(container)
+
+        self.scroll_layout.addStretch()
+
+    def _render_las_cloud(self):
+        self.plotter.clear()
+        self.class_actors = {}
+
+        # Add dim gray all-cloud background for context
+        pdata_all = pv.PolyData(self.xyz)
+        self.las_actor = self.plotter.add_mesh(
+            pdata_all,
+            color=(160, 160, 160),
+            point_size=2,
+            render_points_as_spheres=True,
+            name="las_background"
+        )
+        try:
+            self.las_actor.SetVisibility(1)
+        except Exception:
+            pass
+
+        for cls_id in self.unique_classes:
+            mask = self.classes == cls_id
             pts = self.xyz[mask]
-            if pts.shape[0] == 0:
+            if len(pts) == 0:
                 continue
 
             pdata = pv.PolyData(pts)
-            color = self.class_colors[int(c)]
-
-            # Add mesh/points; return value is a vtk actor or wrapper
             actor = self.plotter.add_mesh(
                 pdata,
-                color=color,
-                point_size=3,
+                color=self.class_colors[int(cls_id)],
+                point_size=4,
                 render_points_as_spheres=True,
-                name=f"class_{int(c)}"
+                name=f"class_{int(cls_id)}"
             )
-            self.actors[int(c)] = actor
-
-            # Create checkbox row with color square
-            name = CLASS_NAME_MAP.get(int(c), f"Class {int(c)}")
-            cb = QCheckBox(f"{int(c)} — {name}")
-            cb.setChecked(True)
-            cb.stateChanged.connect(self._on_checkbox_changed)
-            self.checkboxes[int(c)] = cb
-
-            # color square QLabel
-            color_hex = '#{:02x}{:02x}{:02x}'.format(*color)
-            from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout
-            row = QWidget()
-            row_layout = QHBoxLayout()
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            color_square = QLabel()
-            color_square.setFixedSize(18, 18)
-            color_square.setStyleSheet(f"background-color: {color_hex}; border: 1px solid #333;")
-            row_layout.addWidget(color_square)
-            row_layout.addWidget(cb)
-            row.setLayout(row_layout)
-            self.scroll_layout.addWidget(row)
+            self.class_actors[int(cls_id)] = actor
 
         self.plotter.reset_camera()
         self.plotter.render()
 
-    def _on_checkbox_changed(self, state):
-        # Toggle visibility for each actor according to checkbox state
-        for c, cb in self.checkboxes.items():
-            actor = self.actors.get(int(c))
-            if actor is None:
-                continue
-            visible = cb.isChecked()
-            try:
-                # vtkActor API
-                actor.SetVisibility(1 if visible else 0)
-            except Exception:
-                # pyvista wrapper fallback
-                try:
-                    actor.actor.SetVisibility(1 if visible else 0)
-                except Exception:
-                    pass
-        self.plotter.render()
+    def _toggle_class(self, cls_id, state):
+        actor = self.class_actors.get(cls_id)
+        if actor is not None:
+            actor.SetVisibility(state == Qt.Checked)
+            self.plotter.render()

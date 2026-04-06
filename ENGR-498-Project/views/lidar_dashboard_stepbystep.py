@@ -815,7 +815,7 @@ if __name__ == "__main__":
             "wire_extraction": "pending",
             "fusion": "pending"
         },
-        "files": "C:\\Users\\henry\\Downloads\\LAW1.las",
+        "files": "assets/scan_001/processed/slam/LAW1.las",
         "wire_params": {
             "R": 0.5,
             "angleThr": 10,
