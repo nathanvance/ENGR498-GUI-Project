@@ -20,9 +20,12 @@ Design workflow:
 - `Matlab_ExtractPowerLine/`
   MATLAB-connected powerline viewer and test scripts.
 
-For a detailed backend architecture walkthrough, open:
+For backend documentation, use:
 
-- [BACKEND_SOFTWARE_DESCRIPTION.md](BACKEND_SOFTWARE_DESCRIPTION.md)
+- click-through docs set:
+  - [backend_docs/README.md](backend_docs/README.md)
+- single-file reference:
+  - [BACKEND_SOFTWARE_DESCRIPTION.md](BACKEND_SOFTWARE_DESCRIPTION.md)
 
 
 ## Host Requirements
