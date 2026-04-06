@@ -70,6 +70,83 @@ At a high level, the backend is split into four runtime domains:
 The pipeline is not a single monolithic script. It is a staged system with
 branch points, file contracts, and output handoffs between domains.
 
+### Sequence Diagram: End-to-End Backend Flow
+
+```mermaid
+sequenceDiagram
+    participant User as User / Operator
+    participant Win as Windows Python
+    participant Dock as Docker + ROS
+    participant Fast as FAST-LIO
+    participant Samp as TF/Image/GPS Sampler
+    participant Yolo as YOLO Inference
+    participant Fusion as Fusion Engine
+    participant GPS as GPS Georeferencer
+
+    User->>Win: Launch pose-recovery workflow
+    Win->>Dock: docker compose run portable-ros-stack
+    Dock->>Fast: Start FAST-LIO
+    Dock->>Samp: Start tf_sample_camera_gps.py
+    Dock->>Dock: Replay rosbag with /clock
+    Fast-->>Dock: Build map / scans.pcd
+    Samp-->>Dock: Write images/, image_timestamps.csv
+    Samp-->>Dock: Write tf_camera_out.csv, tf_gps_out.csv
+    Dock-->>Win: Persist outputs under rosbag_preprocessing/outputs
+
+    User->>Win: Launch inference
+    Win->>Yolo: Local inference or prepare Colab bundle
+    Yolo-->>Win: Write masks_npz/, meta_json/
+
+    User->>Win: Launch fusion
+    Win->>Fusion: fuse_masks_to_slam.py
+    Fusion-->>Win: Write fused_objects.json
+    Fusion-->>Win: Write fused_semantic_map.ply
+    Fusion-->>Win: Write fused_semantic_labels.npz
+    Fusion-->>Win: Write pole_neighbor_distances.json
+
+    alt GPS data available
+        User->>Win: Launch georeference step
+        Win->>GPS: georeference_from_tf_gps.py
+        GPS-->>Win: Write gps_alignment.json
+        GPS-->>Win: Write georeferenced JSON outputs
+    end
+```
+
+### Sequence Diagram: Inference Branching
+
+```mermaid
+flowchart TD
+    A[pose recovery run directory] --> B[run_yolo_inference.py]
+    B --> C{runtime mode}
+    C -->|local| D[probe CUDA + ultralytics]
+    C -->|auto| D
+    C -->|colab| H[prepare colab_bundle]
+    D --> E{usable local NVIDIA GPU?}
+    E -->|yes| F[run local YOLO segmentation]
+    E -->|no| H
+    F --> G[masks_npz + meta_json + pred_images]
+    H --> I[upload/run in Colab]
+    I --> J[run_inference_colab.py]
+    J --> K[Colab outputs]
+    K --> L[import_colab_inference_results.py]
+    L --> G
+```
+
+### Sequence Diagram: GPS Georeferencing
+
+```mermaid
+flowchart LR
+    A[tf_gps_out.csv] --> B[load + filter GPS/TF samples]
+    B --> C[convert GPS LLH to ECEF/ENU]
+    C --> D[apply GPS-to-LiDAR lever arm]
+    D --> E[fit weighted SE2 + Z offset]
+    E --> F[gps_alignment.json]
+    E --> G[apply transform to fused objects]
+    E --> H[apply transform to powerline overlay]
+    G --> I[fused_objects_georeferenced.json]
+    H --> J[powerlines_georeferenced.json]
+```
+
 ## Top-Level Backend Entry Points
 
 ### Project root utilities
@@ -1227,6 +1304,109 @@ Primary output roots:
 - `rosbag_preprocessing/outputs/pose_recovery/`
 - Fusion run output folder chosen by the caller
 
+### Major File Schema Tables
+
+The backend is held together by file contracts. The tables below capture the
+main schemas that downstream stages depend on.
+
+#### `image_timestamps.csv`
+
+| Column | Type | Meaning | Produced by | Consumed by |
+| --- | --- | --- | --- | --- |
+| `filename` | string | Exported JPG filename such as `frame_000001.jpg` | `tf_sample_camera_gps.py` | `run_yolo_inference.py`, `fuse_masks_to_slam.py` |
+| `t_query_sec` | float | Absolute event timestamp used for image/pose matching | `tf_sample_camera_gps.py` | `fuse_masks_to_slam.py` |
+| `t_in_sec` | float | Relative time since first image event in the run | `tf_sample_camera_gps.py` | diagnostics / traceability |
+
+#### `tf_camera_out.csv`
+
+| Column | Type | Meaning | Produced by | Consumed by |
+| --- | --- | --- | --- | --- |
+| `t_in_sec` | float | Relative time since first image event | `tf_sample_camera_gps.py` | diagnostics / traceability |
+| `t_query_sec` | float | Absolute image timestamp used for TF lookup | `tf_sample_camera_gps.py` | `fuse_masks_to_slam.py` when used as pose source |
+| `x`,`y`,`z` | float | LiDAR/body translation in the local SLAM frame | `tf_sample_camera_gps.py` | `fuse_masks_to_slam.py` |
+| `qx`,`qy`,`qz`,`qw` | float | LiDAR/body orientation as quaternion in XYZW order | `tf_sample_camera_gps.py` | `fuse_masks_to_slam.py` |
+| `status` | string | TF sampling status such as `OK`, `NO_TF_AVAILABLE`, `EXTRAPOLATION` | `tf_sample_camera_gps.py` | all downstream filters |
+
+#### `tf_gps_out.csv`
+
+| Column | Type | Meaning | Produced by | Consumed by |
+| --- | --- | --- | --- | --- |
+| `t_in_sec` | float | Relative time since first GPS event | `tf_sample_camera_gps.py` | diagnostics / traceability |
+| `t_query_sec` | float | Absolute GPS timestamp used for TF lookup | `tf_sample_camera_gps.py` | `georeference_from_tf_gps.py` |
+| `x`,`y`,`z` | float | LiDAR/body translation in the local SLAM frame | `tf_sample_camera_gps.py` | `georeference_from_tf_gps.py` |
+| `qx`,`qy`,`qz`,`qw` | float | LiDAR/body orientation as quaternion in XYZW order | `tf_sample_camera_gps.py` | `georeference_from_tf_gps.py` |
+| `status` | string | TF lookup status | `tf_sample_camera_gps.py` | `georeference_from_tf_gps.py` |
+| `latitude_deg` | float | GPS latitude from `NavSatFix` | `tf_sample_camera_gps.py` | `georeference_from_tf_gps.py` |
+| `longitude_deg` | float | GPS longitude from `NavSatFix` | `tf_sample_camera_gps.py` | `georeference_from_tf_gps.py` |
+| `altitude_m` | float | GPS altitude from `NavSatFix` | `tf_sample_camera_gps.py` | `georeference_from_tf_gps.py` |
+| `fix_status` | int | GPS fix quality status | `tf_sample_camera_gps.py` | `georeference_from_tf_gps.py` |
+| `service` | int | GPS service flags | `tf_sample_camera_gps.py` | provenance / filtering |
+| `cov_xx_m2`,`cov_yy_m2`,`cov_zz_m2` | float | GPS covariance diagonal entries | `tf_sample_camera_gps.py` | `georeference_from_tf_gps.py` weighting/filtering |
+| `covariance_type` | int | ROS covariance interpretation enum | `tf_sample_camera_gps.py` | provenance / filtering |
+
+#### `*_masks.npz`
+
+| Key | Type | Meaning | Produced by | Consumed by |
+| --- | --- | --- | --- | --- |
+| `masks` | `uint8[N,H,W]` | Binary instance masks at original image resolution | local YOLO / Colab YOLO | `fuse_masks_to_slam.py` |
+| `cls` | `int32[N]` | YOLO class IDs per instance | local YOLO / Colab YOLO | optional diagnostics |
+| `conf` | `float32[N]` | YOLO confidence per instance | local YOLO / Colab YOLO | optional diagnostics |
+
+#### `*_meta.json`
+
+| Field | Type | Meaning | Produced by | Consumed by |
+| --- | --- | --- | --- | --- |
+| `source_image` | string | Original image path used for inference | local YOLO / Colab YOLO | provenance |
+| `orig_shape` | `[H,W]` | Original image dimensions | local YOLO / Colab YOLO | diagnostics |
+| `names` | object | YOLO class-name lookup | local YOLO / Colab YOLO | diagnostics |
+| `detections[]` | array | Per-instance metadata | local YOLO / Colab YOLO | `fuse_masks_to_slam.py` |
+| `detections[].instance_index` | int | Instance index matching the mask array | local YOLO / Colab YOLO | `fuse_masks_to_slam.py` |
+| `detections[].class_id` | int | YOLO class ID | local YOLO / Colab YOLO | diagnostics |
+| `detections[].class_name` | string | Normalized class label | local YOLO / Colab YOLO | `fuse_masks_to_slam.py` |
+| `detections[].confidence` | float | Detection confidence | local YOLO / Colab YOLO | `fuse_masks_to_slam.py` |
+| `detections[].box_xyxy` | `[x1,y1,x2,y2]` | Detection box | local YOLO / Colab YOLO | provenance |
+
+#### `fused_objects.json`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `pipeline` | string | Producer identifier, currently `fuse_masks_to_slam` |
+| `inputs` | object | Resolved provenance paths for calibration, poses, masks, and point cloud |
+| `settings` | object | Runtime tuning settings used for fusion |
+| `summary.num_input_points` | int | Number of points in the input SLAM cloud |
+| `summary.num_frames_used` | int | Number of image frames that contributed labels |
+| `summary.num_objects` | int | Number of final object instances |
+| `summary.num_pole_distance_links` | int | Number of accepted pole-neighbor links |
+| `frame_matches[]` | array | Per-frame pose-match metadata |
+| `objects[]` | array | Final object records |
+| `objects[].object_name` | string | Instance name such as `pole_01` |
+| `objects[].class_name` | string | Semantic class such as `pole` or `transformer` |
+| `objects[].instance_number` | int | 1-based per-class instance index |
+| `objects[].confidence_score` | float | Mean confidence across the final instance points |
+| `objects[].num_points` | int | Number of points in the final instance |
+| `objects[].centroid_map_xyz` | `[x,y,z]` | Local-frame centroid |
+| `objects[].bbox_aabb_min_xyz` | `[x,y,z]` | Axis-aligned bounding box minimum |
+| `objects[].bbox_aabb_max_xyz` | `[x,y,z]` | Axis-aligned bounding box maximum |
+| `objects[].class_color_rgb` | `[r,g,b]` | Final display color for the class |
+| `objects[].gps` | object | GPS placeholder or georeferenced coordinates |
+
+#### `gps_alignment.json`
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `pipeline` | string | Producer identifier, currently `georeference_from_tf_gps` |
+| `source_tf_gps_csv` | string | Source pose/GPS CSV |
+| `model` | string | Alignment model family, e.g. weighted SE(2) plus Z offset |
+| `gps_to_lidar_offset_body_m` | `[x,y,z]` | Lever-arm offset used during fitting |
+| `reference_llh_deg_m` | object | ENU origin expressed in latitude/longitude/altitude |
+| `transform.scale` | float | Uniform XY scale factor |
+| `transform.yaw_deg` | float | Horizontal-frame rotation into ENU |
+| `transform.translation_enu_m` | `[x,y,z]` | Translation into ENU |
+| `fit_quality.num_samples_total` | int | Number of usable samples loaded |
+| `fit_quality.num_samples_inliers` | int | Number of inliers after robust filtering |
+| `fit_quality.rmse_xy_m` | float | Horizontal fit RMSE |
+| `fit_quality.rmse_z_m` | float | Vertical fit RMSE |
+
 ## 12. Example end-to-end backend flow
 
 ### Step A: preprocess a bag
@@ -1287,6 +1467,70 @@ python .\fusion\georeference_from_tf_gps.py `
   - georeferencing,
   - final export
   is still a logical next step.
+
+### Common Failure Modes and Troubleshooting
+
+The pipeline is multi-stage and cross-runtime, so failures tend to cluster at
+the stage boundaries. The table below summarizes the most common classes of
+backend failure and where to look first.
+
+| Symptom | Likely cause | First files/scripts to inspect | Typical fix |
+| --- | --- | --- | --- |
+| Docker workflow exits immediately | WSL/Docker path conversion or container startup issue | `rosbag_preprocessing/launcher/run_pipeline.py`, `rosbag_preprocessing/docker/run_pipeline.sh`, `rosbag_preprocessing/compose.yaml` | Verify Docker Desktop + WSL integration, confirm the input path is container-visible, run the same mode with `bash` for inspection |
+| Calibration GUI opens but feels wrong or slow | WSLg / GPU / OpenGL path mismatch | `rosbag_preprocessing/compose.yaml`, staged calibration workflow, `scripts/sync_wsl_context.sh` | Verify WSLg and GPU acceleration, rebuild the staged runtime, confirm the shim and runtime libs are present |
+| `tf_camera_out.csv` or `tf_gps_out.csv` is empty | Topics were not found, bag had no matching messages, or replay stalled before events were processed | `run_pose_recovery_camera_gps.sh`, `tf_sample_camera_gps.py`, bag topic names | Override `--image-topic` and `--gps-topic`, inspect logs under `outputs/pose_recovery/<run>/logs/`, confirm the bag actually publishes the expected message types |
+| `images/` exports but timestamps do not match masks later | Inference naming mismatch or timestamps CSV mismatch | `tf_sample_camera_gps.py`, `yolo_inference_common.py`, `run_yolo_inference.py` | Keep original JPG stems unchanged; every `frame_xxxxxx.jpg` must produce `frame_xxxxxx_masks.npz` and `frame_xxxxxx_meta.json` |
+| Local YOLO inference falls back to Colab unexpectedly | `torch`/`ultralytics` missing, CUDA unavailable, or GPU probe failed | `fusion/run_yolo_inference.py`, repo Python env install | Re-run `install_repo_python_env.ps1`, check `torch.cuda.is_available()`, and verify the selected device exists |
+| Colab run completes but import fails | Bundle incomplete or output directories missing | `fusion/colab/run_inference_colab.py`, `fusion/import_colab_inference_results.py` | Confirm the Colab bundle contains `masks_npz/` and `meta_json/` for every image, then import again |
+| Fusion reports “no allowed detections” | Class names from YOLO do not match allowed Fusion classes | `fuse_masks_to_slam.py`, `*_meta.json` | Update the YOLO labels, or pass `--allowed-classes` / `--reject-classes` so the class lists match your model outputs |
+| Fusion reports “no map points landed inside allowed masks” | Calibration mismatch, pose mismatch, image rotation mismatch, or wrong timestamp pairing | `fuse_masks_to_slam.py`, intrinsics/extrinsics JSON, pose CSV, image timestamps CSV | Verify camera intrinsics, LiDAR-camera extrinsics, and timestamp columns; ensure masks were not rotated relative to the original JPGs |
+| One pole or transformer is split into multiple instances | Clustering thresholds too strict for the scene | `segment_class_instances()`, `merge_pole_fragments()`, `merge_transformer_fragments()` inside `fuse_masks_to_slam.py` | Adjust `--eps-factor`, cluster sizes, or fragment merge thresholds |
+| GPS georeferencing produces bad coordinates | Poor GPS sample quality, wrong GPS-to-LiDAR offset, or too few inliers | `georeference_from_tf_gps.py`, `tf_gps_out.csv`, `gps_alignment.json` | Filter bad fixes more aggressively, verify lever-arm direction/sign, inspect RMSE and inlier count in `gps_alignment.json` |
+| Native DLL build fails | Missing Visual Studio Build Tools or `vswhere.exe` | `native/build_accel.py`, `native/build_geospatial_accel.py` | Install Visual Studio Build Tools with C++ support or set `VSWHERE_PATH` |
+
+#### Troubleshooting by stage
+
+##### Docker / ROS preprocessing
+
+1. Start with the run folder under `rosbag_preprocessing/outputs/...`.
+2. Inspect `logs/roscore.log`, `logs/fastlio.log`, `logs/rosbag.log`, and
+   `logs/sampler.log`.
+3. If topics were not detected, run the workflow again with manual overrides:
+   - `--image-topic /camera/image/compressed`
+   - `--gps-topic /fix`
+4. If `scans.pcd` is missing, confirm FAST-LIO actually wrote its internal PCD
+   before the script shut it down.
+
+##### Inference
+
+1. Confirm the pose-recovery run directory contains both:
+   - `images/`
+   - `image_timestamps.csv`
+2. Confirm the weights file exists and matches a segmentation model.
+3. For local runs, verify CUDA visibility in the active Python environment.
+4. For Colab runs, verify the imported output contains every expected stem.
+
+##### Fusion
+
+1. Inspect `*_meta.json` for the class labels actually produced by YOLO.
+2. Confirm image/mask stems match exactly.
+3. Confirm the point cloud is non-empty and the pose CSV uses the expected time
+   column.
+4. If everything runs but labels look wrong, suspect calibration or timestamp
+   alignment first.
+
+##### GPS alignment
+
+1. Inspect `gps_alignment.json` first.
+2. Check:
+   - `num_samples_total`
+   - `num_samples_inliers`
+   - `rmse_xy_m`
+   - `rmse_z_m`
+3. Large RMSE with few inliers usually means:
+   - poor GPS quality,
+   - a wrong lever arm,
+   - or a local frame/GPS mismatch in the source data.
 
 ## 14. Summary
 
