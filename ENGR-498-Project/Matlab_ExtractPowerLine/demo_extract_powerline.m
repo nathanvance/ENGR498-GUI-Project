@@ -15,6 +15,7 @@
 % *****************************************************************************/
 
 % Extracting powerline from mobile lidar point cloud
+%Just add the parameters in the function call to allow user to modify them TODO
 % function: [isPLIndex] = extractPLs(pointcloud,radius,angleThr,LThr)
 % pointcloud: mobile lidar point cloud [x y z]
 % radius: Neighborhood point search radius

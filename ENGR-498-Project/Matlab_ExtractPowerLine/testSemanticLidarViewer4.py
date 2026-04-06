@@ -16,31 +16,29 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from pyvistaqt import QtInteractor
         
-LAS_PATH = r"C:\Users\henry\Downloads\slt3_filtered.las"
-#"C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\ENGR-498-Project\assets\scan_002\processed\filtered\cloud_filtered.las"
-#C:\Users\henry\Downloads\law2-matched-filtered-classifier-powerline-flainet\law2_matched_filtered_-_classifier_-_powerline_flainet\law2_matched_filtered.las"
+LAS_PATH = r"C:\Users\henry\Downloads\law2-matched-filtered-classifier-powerline-flainet\law2_matched_filtered_-_classifier_-_powerline_flainet\law2_matched_filtered.las"
 
 CLASS_NAME_MAP = {
     0: "Not classified",
     1: "Other",
     2: "Ground",
     3: "Vegetation",
-    6: "Buildings",
-    7: "Low noise",
-    18: "High noise",
-    21: "Vehicles",
-    24: "Low voltage wire",
-    25: "High voltage wire",
-    26: "Railroad wire",
-    27: "Low voltage tower",
-    28: "High voltage tower",
-    29: "Railroad tower",
-    30: "Fences",
-    31: "Insulator",
-    32: "Guy wire",
-    34: "Tension wire"
-    #18: "Cross-arms",
-    #19: "Pedestals"
+    4: "Buildings",
+    5: "Low noise",
+    6: "High noise",
+    7: "Vehicles",
+    8: "Low voltage wire",
+    9: "High voltage wire",
+    10: "Railroad wire",
+    11: "Low voltage tower",
+    12: "High voltage tower",
+    13: "Railroad tower",
+    14: "Fences",
+    15: "Insulator",
+    16: "Guy wire",
+    17: "Tension wire",
+    18: "Cross-arms",
+    19: "Pedestals"
 }
 
 
@@ -198,7 +196,6 @@ class SemanticViewer(QWidget):
         self.ground_kdtree = None
         self.ground_clearances = []  # list of (clearance, lowest_point, ground_point)
         self.catenary_params = []  # list of catenary parameters (a, b, c, t0, mean_xy, u_xy, mean_perp, perp_xy)
-        self.wire_sags = []  # list of sag values in meters
 
         self.xyz = None
         self.classes = None
@@ -469,66 +466,14 @@ class SemanticViewer(QWidget):
         
         return float(dist), lowest, nearest_ground
 
-    def compute_wire_sag(self, curve_points):
-        """
-        Compute the sag of a wire.
-        
-        Sag = vertical distance from the line connecting the endpoints 
-              to the lowest point on the wire.
-        
-        Args:
-            curve_points: numpy array of curve points (N, 3)
-            
-        Returns:
-            float: sag distance in meters, or None if not computable
-        """
-        if curve_points is None or len(curve_points) < 3:
-            return None
-        
-        # Get endpoints
-        p1 = curve_points[0]   # First point
-        p2 = curve_points[-1]  # Last point
-        
-        # Find the lowest point on the curve
-        idx_lowest = int(np.argmin(curve_points[:, 2]))
-        lowest_point = curve_points[idx_lowest]
-        
-        # Compute the height of the straight line between endpoints at the x,y position of lowest point
-        # Using parametric line equation: P(t) = P1 + t*(P2-P1), where t is in [0,1]
-        
-        # Project lowest_point onto the line P1->P2 to find parameter t
-        # Using 3D projection
-        v = p2 - p1  # Vector from p1 to p2
-        w = lowest_point - p1  # Vector from p1 to lowest point
-        
-        if np.linalg.norm(v) < 1e-6:  # Endpoints are essentially the same point
-            return 0.0
-        
-        # Parameter t along the line (0 = p1, 1 = p2)
-        t = np.dot(w, v) / np.dot(v, v)
-        t = np.clip(t, 0, 1)  # Clamp to [0, 1]
-        
-        # Point on the straight line at parameter t
-        point_on_line = p1 + t * v
-        
-        # Sag is the vertical (Z) distance between the straight line and the lowest point
-        sag = point_on_line[2] - lowest_point[2]
-        
-        return float(sag) if sag > 0 else 0.0
-
     # -----------------------
     # Wire loading & rendering
     # -----------------------
-    #this is where I would pass the filepath of the wires based on the scan the user selected. 
-    # I would just access the wire, ground points from the assets folder. 
-    # for testing, I'm hardcoding the path to the wires file that I know works.
-    #TODO - make this more flexible and connect it to the dashboard selection.
     def load_saved_wire_files(self,
                               points_npz_path=r"C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\wires_points.npz",
                               info_json_path=r"C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\wire_info.json",
-                              ground_npz_path=r"C:\Users\henry\OneDrive\Documents\GitHub\ENGR498-GUI-Project\ground_points.npz"):
-                              #C:\Users\henry\Downloads\law2-matched-filtered-classifier-powerline-flainet\law2_matched_filtered_-_classifier_-_powerline_flainet\ground_points.npz"):
-        # load wires 
+                              ground_npz_path=r"C:\Users\henry\Downloads\law2-matched-filtered-classifier-powerline-flainet\law2_matched_filtered_-_classifier_-_powerline_flainet\ground_points.npz"):
+        # load wires
         npz = np.load(points_npz_path, allow_pickle=True)
 
         # Extract MATLAB-style struct
@@ -560,7 +505,6 @@ class SemanticViewer(QWidget):
         self._actor_orig_colors = [None] * n_wires
         self.ground_clearances = [None] * n_wires
         self.catenary_params = []  # Reset catenary params list
-        self.wire_sags = []  # Reset sag list
 
         for i in range(n_wires):
             pts = np.array(locations[i])
@@ -602,12 +546,6 @@ class SemanticViewer(QWidget):
             if curve_points is not None and curve_points.size > 0:
                 clearance_info = self.compute_ground_clearance(curve_points, catenary_params)
             self.ground_clearances[i] = clearance_info
-
-            # compute and store sag
-            sag = None
-            if curve_points is not None and curve_points.size > 0:
-                sag = self.compute_wire_sag(curve_points)
-            self.wire_sags.append(sag)
 
             self._create_wire_ui(i, poly[i] if i < len(poly) else None)
 
@@ -818,19 +756,12 @@ class SemanticViewer(QWidget):
         self.selected_wire_index = idx
 
         poly_entry = self.wire_widgets[idx]["poly"]
-        # show poly info + clearance + sag
+        # show poly info + clearance
         info_text = self._format_poly_info(idx, poly_entry)
-        
         # append clearance if available
         clear_info = self.ground_clearances[idx] if idx < len(self.ground_clearances) else None
         if clear_info is not None and clear_info[0] is not None:
-            info_text += f"\nGround clearance (center): {clear_info[0]:.3f} m"
-        
-        # append sag if available
-        sag = self.wire_sags[idx] if idx < len(self.wire_sags) else None
-        if sag is not None:
-            info_text += f"\nWire sag: {sag:.3f} m"
-        
+            info_text += f"\nGround clearance (lowest point): {clear_info[0]:.3f} m"
         self.info_label.setText(info_text)
         #draws clearance line
         self._draw_clearance_line(idx)
@@ -934,7 +865,6 @@ class SemanticViewer(QWidget):
         self._actor_orig_colors = []
         self.selected_wire_index = None
         self.ground_clearances = []
-        self.wire_sags = []
         self.info_label.setText("Select a wire to see details.")
         self.plotter.render()
 

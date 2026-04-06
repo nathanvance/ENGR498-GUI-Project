@@ -11,7 +11,8 @@ from PySide6.QtCore import Qt, Signal
 from pyvistaqt import QtInteractor
 
 # Hardcoded path per Option 2 — update to your actual LAS path
-LAS_PATH = r"C:\Users\henry\Downloads\ENGR-498-Project\assets\testSemanticPC.las"
+LAS_PATH = r"C:\Users\henry\Downloads\law2-matched-filtered-classifier-powerline-flainet\law2_matched_filtered_-_classifier_-_powerline_flainet\law2_matched_filtered.las"
+#"C:\Users\henry\Downloads\ENGR-498-Project\assets\testSemanticPC.las"
 
 # Map class ID -> human readable name (optional)
 CLASS_NAME_MAP = {

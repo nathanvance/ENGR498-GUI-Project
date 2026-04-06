@@ -29,7 +29,6 @@ class FilterCommand(QUndoCommand):
 
 
 class PointCloudFilterViewer(QWidget):
-    backRequested = Signal()  # Signal to notify when user wants to go back to dashboard
     """
     Point cloud viewer with filtering, downsampling, and denoising capabilities.
     Features undo/redo functionality and preserves all point attributes.
@@ -41,6 +40,7 @@ class PointCloudFilterViewer(QWidget):
         self.resize(1400, 800)
 
         self.filename = filename
+        self.backRequested = Signal()  # Signal to notify when user wants to go back to dashboard
 
         # Data storage
         self.original_xyz = None
@@ -110,11 +110,7 @@ class PointCloudFilterViewer(QWidget):
         btn_save = QPushButton("Save LAS and Return")
         btn_save.clicked.connect(self.save_las_file)
         controls_layout.addWidget(btn_save)
-
-        btn_cancel = QPushButton("Cancel")
-        btn_cancel.clicked.connect(self.backRequested)
-        controls_layout.addWidget(btn_cancel)
-
+        
         controls_layout.addStretch()
         
         self.lbl_point_count = QLabel("Points: 0")
@@ -470,51 +466,46 @@ class PointCloudFilterViewer(QWidget):
         self._visualize_current()
         
     def save_las_file(self):
-        import os
-        import json
-        import numpy as np
-        import laspy
-        from PySide6.QtWidgets import QMessageBox
-
+        #This function should be modified to use the file path passed into the initialized GUI to save the filtered point cloud to the 
+        #processed folder of the user specified scan using the file path information passed in
+        #The file path should also be written to the metadata.json file under the field ["files"]["filtered"]. 
+        #Should also return the user back to the dashboard 
         if self.current_xyz is None:
             QMessageBox.warning(self, "Warning", "No point cloud to save")
             return
+            
+        # filename, _ = QFileDialog.getSaveFileName(
+        #     self, "Save LAS File", "",
+        #     "LAS Files (*.las);;LAZ Files (*.laz);;All Files (*)"
+        # )
+        
+        # if not filename:
+        #     return
+              
+        #create the assets structure first and then using the filepath attribute of this class, modify it to save the file 
+        # in the correct "filtered" location 
+        # and update the metadata.json file with the new filepath information
+        # we could include a cancel button that doesn't save or modify anything and just returns the user back to the dashboard 
+        print("Saving filtered point cloud to:", self.filename)
+        #cut the string up until the last backslash to get the directory, then append "processed/filtered/cloud_filtered.las" to save in the correct location
+        #the filepath passed into the filter should always have assets/scan_xxx/processed/slam, so we can reliably replace "slam" with "filtered/cloud_filtered.las" to save the filtered file in the correct location
+        #how would I modify the filename to do this replacement? I could use the os.path library to split the path and then reconstruct it with the new filename
+        import os
+        base_dir = os.path.dirname(self.filename)
+        filtered_dir = os.path.join(base_dir, "filtered")
+        os.makedirs(filtered_dir, exist_ok=True)
+        filename = os.path.join(filtered_dir, "cloud_filtered.las")
 
-        if not self.filename:
-            QMessageBox.warning(self, "Warning", "No source file path provided")
-            return
+        print("Constructed filtered file path:", filename)
+        self.backRequested.emit()
+        return 
+
+
 
         try:
-            print("Original source file:", self.filename)
-
-            # -----------------------------------
-            # Build filtered output path
-            # Example input:
-            # assets/scan_001/processed/slam/cloud.las
-            #
-            # Output:
-            # assets/scan_001/processed/filtered/cloud_filtered.las
-            # -----------------------------------
-            source_path = os.path.normpath(self.filename)
-
-            # go up from .../processed/slam/cloud.las -> .../processed
-            slam_dir = os.path.dirname(source_path)                # .../processed/slam
-            processed_dir = os.path.dirname(slam_dir)             # .../processed
-            scan_dir = os.path.dirname(processed_dir)             # .../scan_001
-
-            filtered_dir = os.path.join(processed_dir, "filtered")
-            os.makedirs(filtered_dir, exist_ok=True)
-
-            output_path = os.path.join(filtered_dir, "cloud_filtered.las")
-
-            print("Saving filtered point cloud to:", output_path)
-
-            # -----------------------------------
-            # Determine LAS format
-            # -----------------------------------
             has_colors = self.current_colors is not None
             has_intensity = self.current_intensity is not None
-
+            
             if has_colors and has_intensity:
                 point_format, version = 3, "1.2"
             elif has_colors:
@@ -523,30 +514,28 @@ class PointCloudFilterViewer(QWidget):
                 point_format, version = 1, "1.2"
             else:
                 point_format, version = 0, "1.2"
-
+            
             header = laspy.LasHeader(point_format=point_format, version=version)
             header.offsets = np.min(self.current_xyz, axis=0)
             header.scales = [0.001, 0.001, 0.001]
-
+            
             las = laspy.LasData(header)
             las.x = self.current_xyz[:, 0]
             las.y = self.current_xyz[:, 1]
             las.z = self.current_xyz[:, 2]
-
+            
             if self.current_intensity is not None:
                 las.intensity = self.current_intensity.astype(np.uint16)
-
+            
             if self.current_colors is not None:
                 if self.current_colors.max() <= 255:
                     colors_16bit = (self.current_colors.astype(np.uint32) * 257).astype(np.uint16)
                 else:
                     colors_16bit = self.current_colors.astype(np.uint16)
-
-                las.red = colors_16bit[:, 0]
+                las.red   = colors_16bit[:, 0]
                 las.green = colors_16bit[:, 1]
-                las.blue = colors_16bit[:, 2]
-
-            # Optional normals
+                las.blue  = colors_16bit[:, 2]
+            
             if self.current_normals is not None:
                 try:
                     for name in ("NormalX", "NormalY", "NormalZ"):
@@ -556,44 +545,9 @@ class PointCloudFilterViewer(QWidget):
                     las.NormalZ = self.current_normals[:, 2].astype(np.float32)
                 except Exception as e:
                     print(f"Warning: Could not save normals: {e}")
-
-            # -----------------------------------
-            # Write LAS file
-            # -----------------------------------
-            las.write(output_path)
-
-            # -----------------------------------
-            # Update metadata.json
-            # -----------------------------------
-            metadata_path = os.path.join(scan_dir, "metadata.json")
-
-            if os.path.exists(metadata_path):
-                with open(metadata_path, "r") as f:
-                    metadata = json.load(f)
-            else:
-                metadata = {}
-
-            # Ensure required structure exists
-            if "files" not in metadata or not isinstance(metadata["files"], dict):
-                metadata["files"] = {}
-
-            if "status" not in metadata or not isinstance(metadata["status"], dict):
-                metadata["status"] = {}
-
-            # Save relative path if you want cleaner metadata
-            rel_output_path = os.path.relpath(output_path, scan_dir).replace("\\", "/")
-
-            metadata["files"]["filtered"] = rel_output_path
-            metadata["status"]["filtering"] = "done"
-
-            with open(metadata_path, "w") as f:
-                json.dump(metadata, f, indent=2)
-
-            print("Updated metadata.json:", metadata_path)
-
-            # -----------------------------------
-            # Show success
-            # -----------------------------------
+                
+            las.write(filename)
+            
             info_parts = [f"Saved {len(self.current_xyz):,} points"]
             if self.current_colors is not None:
                 info_parts.append("with RGB colors")
@@ -601,18 +555,9 @@ class PointCloudFilterViewer(QWidget):
                 info_parts.append("with intensity")
             if self.current_normals is not None:
                 info_parts.append("with normals")
-
-            QMessageBox.information(
-                self,
-                "Success",
-                f"{', '.join(info_parts)} to:\n{output_path}"
-            )
-
-            # -----------------------------------
-            # Return to dashboard
-            # -----------------------------------
-            self.backRequested.emit()
-
+            
+            QMessageBox.information(self, "Success", f"{', '.join(info_parts)} to:\n{filename}")
+            
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save LAS file:\n{str(e)}")
         

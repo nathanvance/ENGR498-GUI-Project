@@ -1,8 +1,10 @@
 import laspy
 import numpy as np
 
-inp = r"C:\Users\henry\Downloads\movingtest1_filtered_with_normals_matlab.las"
-out = r"C:\Users\henry\Downloads\movingtest1_filtered_with_normals_matlab_fixed.las"
+inp = r"C:\Users\henry\Downloads\LAW2.las"
+#C:\Users\henry\Downloads\movingtest1_filtered_with_normals_matlab.las"
+out = r"C:\Users\henry\Downloads\LAW2_fixed.las"
+#C:\Users\henry\Downloads\movingtest1_filtered_with_normals_matlab_fixed.las"
 
 las = laspy.read(inp)
 
