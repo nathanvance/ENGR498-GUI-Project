@@ -247,6 +247,12 @@ and writes a Fusion-friendly image timestamp file:
 outputs/pose_recovery/<run_name>/image_timestamps.csv
 ```
 
+Those two outputs are the direct inputs expected by:
+
+```text
+ENGR-498-Project/fusion/run_yolo_inference.py
+```
+
 
 ## Compose Notes
 
