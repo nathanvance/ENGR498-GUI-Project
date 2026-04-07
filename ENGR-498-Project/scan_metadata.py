@@ -36,6 +36,10 @@ DEFAULT_FILES = {
     "pred_images_dir": "",
     "masks_dir": "",
     "meta_dir": "",
+    "calibration_run_dir": "",
+    "calibration_calib_json": "",
+    "resolved_intrinsics_json": "",
+    "resolved_extrinsics_json": "",
     "fused_objects": "processed/fusion/fused_objects.json",
     "fused_map": "processed/fusion/fused_semantic_map.ply",
     "fused_labels": "processed/fusion/fused_semantic_labels.npz",
@@ -50,18 +54,13 @@ DEFAULT_FILES = {
 
 DEFAULT_CONFIG = {
     "inference": {
-        "runtime": "auto",
+        "runtime": "local",
         "weights": "",
         "local_device": "0",
         "preferred_colab_gpu": "A100",
     },
     "fusion": {
-        "intrinsics_json": "",
-        "extrinsics_json": "",
-        "time_column": "t_query_sec",
-        "time_offset_sec": 0.0,
-        "image_filename_column": "filename",
-        "image_time_column": "",
+        "calibration_run_dir": "",
     },
     "gps": {
         "offset_body_xyz_m": "0,0,0",

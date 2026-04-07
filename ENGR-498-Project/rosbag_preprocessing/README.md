@@ -4,8 +4,16 @@ This folder contains the Docker/Compose project used to run the Linux ROS
 preprocessing workflows from Windows:
 
 - direct visual LiDAR calibration
-- FAST-LIO pose recovery
+- FAST-LIO rosbag preprocessing / SLAM
 - TF sampling on image and GPS events
+
+Calibration mode and post-processing mode are intentionally separate:
+
+- calibration mode extracts camera intrinsics from `/camera/camera_info`,
+  solves the LiDAR-camera extrinsic transform, and writes a calibration run
+- post-processing mode runs FAST-LIO SLAM, JPG export, and TF sampling, then
+  feeds those outputs into wire extraction, image inference, Fusion, and GPS
+  georeferencing
 
 These workflows can still be launched manually, but the experimental GUI branch
 also drives the pose-recovery workflow from the Windows dashboard through:
@@ -257,7 +265,7 @@ This workflow writes the key downstream handoff file:
 outputs/pose_recovery/<run_name>/tf_gps_out.csv
 ```
 
-When the integrated GUI launches pose recovery for a scan, the output root is
+When the integrated GUI launches rosbag preprocessing for a scan, the output root is
 redirected into the scan folder itself:
 
 ```text

@@ -5,11 +5,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QStackedWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QStackedWidget, QToolBar
 
 from Matlab_ExtractPowerLine.testSemanticLidarViewer import SemanticViewer as CombinedSemanticViewer
 from PreProcessing_GUI.point_cloud_filter_gui import PointCloudFilterViewer
-from gui_pipeline import BackendPipelineThread, LeafletServerManager
+from calibration_bridge import CALIBRATION_OUTPUT_ROOT, newest_calibration_run, resolve_calibration_run
+from gui_pipeline import BackendPipelineThread, CalibrationWorkflowThread, LeafletServerManager
 from project_paths import ASSETS_DIR
 from scan_metadata import (
     ensure_scan_structure,
@@ -19,6 +20,7 @@ from scan_metadata import (
     resolve_scan_path,
     save_scan_metadata,
 )
+from views.calibration_mode import CalibrationModeView
 from views.lidar_dashboard import DashboardView
 from views.lidar_dashboard_stepbystep import StepByStepDashboard
 
@@ -31,30 +33,49 @@ class DashboardTestWindow(QMainWindow):
 
         self._leaflet_manager = LeafletServerManager()
         self._pipeline_thread: BackendPipelineThread | None = None
+        self._calibration_thread: CalibrationWorkflowThread | None = None
         self._previous_widget = None
 
         self.setup_demo_assets()
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
+        self._setup_mode_toolbar()
 
         self.auto_dashboard = DashboardView(assets_path=str(ASSETS_DIR))
         self.step_dashboard = StepByStepDashboard(assets_path=str(ASSETS_DIR))
+        self.calibration_view = CalibrationModeView(default_output_root=CALIBRATION_OUTPUT_ROOT)
         self.filter_viewer = PointCloudFilterViewer(filename=None)
         self.semantic_viewer = CombinedSemanticViewer()
         self.semantic_viewer.set_open_map_callback(self.open_map_for_scan)
 
         self.stack.addWidget(self.auto_dashboard)   # index 0
         self.stack.addWidget(self.step_dashboard)   # index 1
-        self.stack.addWidget(self.filter_viewer)    # index 2
-        self.stack.addWidget(self.semantic_viewer)  # index 3
+        self.stack.addWidget(self.calibration_view) # index 2
+        self.stack.addWidget(self.filter_viewer)    # index 3
+        self.stack.addWidget(self.semantic_viewer)  # index 4
 
         self.stack.setCurrentWidget(self.auto_dashboard)
         self._connect_signals()
 
+    def _setup_mode_toolbar(self):
+        toolbar = QToolBar("Modes", self)
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+
+        post_auto = toolbar.addAction("Post-Processing Auto")
+        post_auto.triggered.connect(lambda: self.switch_to(self.auto_dashboard))
+
+        post_step = toolbar.addAction("Post-Processing Step-By-Step")
+        post_step.triggered.connect(lambda: self.switch_to(self.step_dashboard))
+
+        calibration = toolbar.addAction("Calibration Mode")
+        calibration.triggered.connect(lambda: self.switch_to(self.calibration_view))
+
     def _connect_signals(self):
         self.auto_dashboard.switchToStepModeRequested.connect(lambda: self.switch_to(self.step_dashboard))
         self.step_dashboard.switchToAutoModeRequested.connect(lambda: self.switch_to(self.auto_dashboard))
+        self.calibration_view.switchToPostProcessingRequested.connect(lambda: self.switch_to(self.auto_dashboard))
 
         self.auto_dashboard.createScanRequested.connect(self.create_new_scan)
         self.step_dashboard.createScanRequested.connect(self.create_new_scan)
@@ -70,6 +91,7 @@ class DashboardTestWindow(QMainWindow):
         self.step_dashboard.openMapRequested.connect(self.open_map_for_scan)
 
         self.step_dashboard.openFilterViewerRequested.connect(self.open_filter_viewer)
+        self.calibration_view.runCalibrationRequested.connect(self.run_calibration_workflow)
 
         self.filter_viewer.backRequested.connect(self._restore_previous_widget)
         self.semantic_viewer.backRequested.connect(self._restore_previous_widget)
@@ -117,7 +139,7 @@ class DashboardTestWindow(QMainWindow):
                     "fusion": "pending",
                 },
                 "files": {},
-                "notes": "Add a rosbag under raw/, then configure inference weights and fusion calibration JSON paths before running the backend pipeline.",
+                "notes": "Add a rosbag under raw/, complete calibration mode separately, then run post-processing.",
             }
             save_scan_metadata(scan_dir, metadata)
 
@@ -177,23 +199,27 @@ class DashboardTestWindow(QMainWindow):
         scan_dir, metadata = load_scan_metadata(scan_ref)
         changed = False
         fusion_cfg = metadata.setdefault("config", {}).setdefault("fusion", {})
+        calibration_run = resolve_scan_path(scan_dir, fusion_cfg.get("calibration_run_dir")) or resolve_scan_path(
+            scan_dir, metadata.get("files", {}).get("calibration_run_dir")
+        )
+        calibration_run = resolve_calibration_run(calibration_run, fallback_to_latest=True)
+        if calibration_run is None:
+            chosen = QFileDialog.getExistingDirectory(
+                self,
+                "Select completed calibration run folder",
+                str(CALIBRATION_OUTPUT_ROOT),
+            )
+            if not chosen:
+                QMessageBox.warning(
+                    self,
+                    "Pipeline Cancelled",
+                    "Fusion requires a completed calibration mode output. Run calibration mode first or select a calibration run folder.",
+                )
+                return None
+            calibration_run = Path(chosen)
 
-        for key, title in (
-            ("intrinsics_json", "Select camera intrinsics JSON"),
-            ("extrinsics_json", "Select LiDAR-camera extrinsics JSON"),
-        ):
-            resolved = resolve_scan_path(scan_dir, fusion_cfg.get(key))
-            if resolved is None or not resolved.is_file():
-                chosen = self._prompt_for_file(title, "JSON Files (*.json);;All Files (*)")
-                if not chosen:
-                    QMessageBox.warning(
-                        self,
-                        "Pipeline Cancelled",
-                        f"The pipeline requires {key}. Configure it and try again.",
-                    )
-                    return None
-                fusion_cfg[key] = relativize_for_scan(scan_dir, chosen)
-                changed = True
+        fusion_cfg["calibration_run_dir"] = relativize_for_scan(scan_dir, calibration_run)
+        changed = True
 
         if changed:
             save_scan_metadata(scan_dir, metadata)
@@ -218,7 +244,7 @@ class DashboardTestWindow(QMainWindow):
             return
         scan_dir, _ = prepared
         summary = (
-            f"Running full backend chain for {scan_dir.name}: Pose Recovery -> Wires -> Image Inference -> Fusion + GPS"
+            f"Running full backend chain for {scan_dir.name}: Rosbag Preprocessing -> Wires -> Image Inference -> Fusion + GPS"
         )
         self.auto_dashboard.add_notification(summary, "running")
         self.step_dashboard.add_notification(summary, "running")
@@ -228,7 +254,7 @@ class DashboardTestWindow(QMainWindow):
         scan_dir, metadata = load_scan_metadata(scan_ref)
 
         if step_key == "slam":
-            self.step_dashboard.add_notification(f"Running SLAM / pose recovery for {scan_dir.name}", "running")
+            self.step_dashboard.add_notification(f"Running rosbag preprocessing for {scan_dir.name}", "running")
             self._start_pipeline_thread(scan_dir, mode="pose-recovery")
             return
 
@@ -261,7 +287,7 @@ class DashboardTestWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Filtering",
-                "No LAS or point cloud file is available yet for filtering. Run pose recovery first.",
+                "No LAS or point cloud file is available yet for filtering. Run rosbag preprocessing first.",
             )
             return
 
@@ -282,12 +308,12 @@ class DashboardTestWindow(QMainWindow):
 
     def _on_pipeline_stage(self, step_key: str, status: str):
         stage_names = {
-            "slam": "Pose Recovery",
+            "slam": "Rosbag Preprocessing",
             "filtering": "Filtering",
             "flai": "FLAI",
             "wire_extraction": "Wire Extraction",
             "inference": "Image Inference",
-            "fusion": "Fusion",
+            "fusion": "Fusion + GPS",
         }
         message = f"{stage_names.get(step_key, step_key)}: {status}"
         self.auto_dashboard.status_label.setText(message)
@@ -308,6 +334,36 @@ class DashboardTestWindow(QMainWindow):
         self.step_dashboard.add_notification(message, "error")
         self.refresh_dashboards()
         QMessageBox.warning(self, "Pipeline", message)
+
+    def run_calibration_workflow(self, dataset_path: str, run_name: str, stop_after: str):
+        if self._calibration_thread is not None and self._calibration_thread.isRunning():
+            QMessageBox.information(self, "Calibration Busy", "A calibration workflow is already running.")
+            return
+
+        self.calibration_view.set_status(f"Running calibration workflow: {run_name}")
+        self.calibration_view.append_log(f"[calibration] dataset={dataset_path}")
+        self.calibration_view.append_log(f"[calibration] run_name={run_name}")
+        self._calibration_thread = CalibrationWorkflowThread(
+            dataset_path,
+            run_name=run_name,
+            stop_after=stop_after or None,
+            parent=self,
+        )
+        self._calibration_thread.logLine.connect(self.calibration_view.append_log)
+        self._calibration_thread.completed.connect(self._on_calibration_complete)
+        self._calibration_thread.failed.connect(self._on_calibration_failed)
+        self._calibration_thread.start()
+
+    def _on_calibration_complete(self, run_name: str):
+        self.calibration_view.set_status(f"Calibration workflow complete: {run_name}")
+        latest_run = newest_calibration_run()
+        if latest_run is not None:
+            self.calibration_view.append_log(f"[calibration] latest output: {latest_run}")
+
+    def _on_calibration_failed(self, message: str):
+        self.calibration_view.set_status("Calibration workflow failed")
+        self.calibration_view.append_log(message)
+        QMessageBox.warning(self, "Calibration", message)
 
     def open_filter_viewer(self, filepath):
         if not filepath or not Path(filepath).exists():

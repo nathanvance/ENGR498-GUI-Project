@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run local YOLO segmentation on rosbag-preprocessing JPG frames, or prepare a Colab fallback bundle."
     )
-    parser.add_argument("--pose-recovery-run-dir", required=True, help="Path to a rosbag_preprocessing pose recovery run directory")
+    parser.add_argument("--pose-recovery-run-dir", required=True, help="Path to a rosbag_preprocessing run directory containing images/ and image_timestamps.csv")
     parser.add_argument(
         "--runtime",
         choices=("auto", "local", "colab"),

@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Import Colab-generated masks/meta outputs back into a local Fusion inference directory."
     )
-    parser.add_argument("--pose-recovery-run-dir", required=True, help="Local pose recovery run directory containing images/ and image_timestamps.csv")
+    parser.add_argument("--pose-recovery-run-dir", required=True, help="Local rosbag_preprocessing run directory containing images/ and image_timestamps.csv")
     parser.add_argument("--colab-run-root", required=True, help="Local path to a completed colab_bundle directory")
     parser.add_argument("--output-dir", help="Destination directory for imported inference outputs. Defaults to <pose_run>/yolo_inference")
     return parser.parse_args()

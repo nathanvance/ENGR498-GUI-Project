@@ -179,7 +179,7 @@ class DashboardView(QWidget):
     switchToStepModeRequested = Signal()  # NEW: Switch to step-by-step mode
     
     STEP_COLUMNS = {
-        "Pose Recovery": "slam",
+        "Rosbag Preprocessing": "slam",
         "Filtering": "filtering",
         "FLAI": "flai",
         "Wires": "wire_extraction",
@@ -192,8 +192,8 @@ class DashboardView(QWidget):
         "filtering": "Optional manual point-cloud cleanup stage.",
         "flai": "External/manual segmentation stage if used.",
         "wire_extraction": "MATLAB wire extraction outputs for wires_points.npz, wire_info.json, and ground points.",
-        "inference": "YOLO segmentation on the JPG images exported during Pose Recovery.",
-        "fusion": "Mask projection, dense-cluster cleanup, instance clustering, pole spacing, and optional GPS georeferencing.",
+        "inference": "YOLO segmentation on the JPG images exported during Rosbag Preprocessing. The GUI defaults to the local NVIDIA GPU and bundled repo weights when available.",
+        "fusion": "Mask projection, dense-cluster cleanup, instance clustering, pole spacing, and optional GPS georeferencing. This stage consumes calibration outputs produced in Calibration Mode.",
     }
     
     def __init__(self, assets_path="assets", parent=None):
@@ -226,7 +226,7 @@ class DashboardView(QWidget):
         main_layout.addWidget(self.table, stretch=1)
         
         # Status bar
-        self.status_label = QLabel("Auto Mode runs Pose Recovery, Wires, Image Inference, and Fusion + GPS as one backend chain.")
+        self.status_label = QLabel("Post-Processing Auto Mode runs Rosbag Preprocessing, Wires, Image Inference, and Fusion + GPS as one backend chain. Calibration is a separate mode.")
         self.status_label.setStyleSheet("color: #666; padding: 8px;")
         main_layout.addWidget(self.status_label)
         
@@ -373,7 +373,7 @@ class DashboardView(QWidget):
                 background-color: #bbb;
             }
         """)
-        self.btn_run_pipeline.setToolTip("Run the automated backend chain for the selected scan: Pose Recovery -> Wires -> Image Inference -> Fusion + GPS.")
+        self.btn_run_pipeline.setToolTip("Run the automated backend chain for the selected scan: Rosbag Preprocessing -> Wires -> Image Inference -> Fusion + GPS.")
         self.btn_run_pipeline.clicked.connect(self._run_full_pipeline)
         layout.addWidget(self.btn_run_pipeline)
         
@@ -652,7 +652,7 @@ class DashboardView(QWidget):
         else:
             self.selected_scan = None
             self.btn_run_pipeline.setEnabled(False)
-            self.status_label.setText("Auto Mode runs Pose Recovery, Wires, Image Inference, and Fusion + GPS as one backend chain.")
+            self.status_label.setText("Post-Processing Auto Mode runs Rosbag Preprocessing, Wires, Image Inference, and Fusion + GPS as one backend chain. Calibration is a separate mode.")
     
     def _run_full_pipeline(self):
         """Run full pipeline for selected scan"""
@@ -660,7 +660,7 @@ class DashboardView(QWidget):
             scan_path = str(self.assets_path / self.selected_scan)
             self.runPipelineRequested.emit(scan_path)
             self.add_notification(
-                f"Started backend chain for {self.selected_scan}: Pose Recovery -> Wires -> Image Inference -> Fusion + GPS",
+                f"Started backend chain for {self.selected_scan}: Rosbag Preprocessing -> Wires -> Image Inference -> Fusion + GPS",
                 "running",
             )
     

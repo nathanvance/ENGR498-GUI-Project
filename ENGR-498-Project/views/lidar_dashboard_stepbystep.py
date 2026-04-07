@@ -169,11 +169,11 @@ class StepInfoDialog(QDialog):
 
 
 class InferenceParametersDialog(QDialog):
-    """Configure local/Colab inference settings."""
+    """Configure inference runtime and optional weights override."""
 
     def __init__(self, current_config=None, scan_dir: Path | None = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Image Inference Configuration")
+        self.setWindowTitle("Image Inference Runtime")
         self.setMinimumWidth(620)
         self.scan_dir = scan_dir
         current_config = current_config or {}
@@ -193,13 +193,15 @@ class InferenceParametersDialog(QDialog):
         layout = QVBoxLayout()
         self.setLayout(layout)
 
-        title = QLabel("Configure Image Inference")
+        title = QLabel("Configure Image Inference Runtime")
         title.setStyleSheet("font-size: 16px; font-weight: bold; color: #1f3a5f; margin-bottom: 10px;")
         layout.addWidget(title)
 
         help_text = QLabel(
-            "This stage runs YOLO segmentation on the JPGs exported during pose recovery. "
-            "It writes masks_npz/, meta_json/, pred_images/, and prepares a Colab bundle when local inference is not available."
+            "This stage runs YOLO segmentation on the JPGs exported during rosbag preprocessing. "
+            "Default behavior is to use the local NVIDIA GPU and the repo's bundled YOLO weights when available. "
+            "The GUI always targets the first local CUDA device (`cuda:0`) for local inference; the numeric device "
+            "selector is kept internal so the user does not need to manage GPU ordinals."
         )
         help_text.setWordWrap(True)
         help_text.setStyleSheet("color: #4b5563; background-color: #eef4ff; padding: 8px; border-radius: 4px;")
@@ -207,15 +209,12 @@ class InferenceParametersDialog(QDialog):
 
         form = QFormLayout()
         self.runtime_combo = QComboBox()
-        self.runtime_combo.addItems(["auto", "local", "colab"])
-        self.runtime_combo.setCurrentText(str(current_config.get("runtime", "auto")))
-        form.addRow("Runtime:", self.runtime_combo)
-
-        self.local_device_edit = QLineEdit(str(current_config.get("local_device", "0")))
-        form.addRow("Local CUDA Device:", self.local_device_edit)
+        self.runtime_combo.addItems(["local", "auto", "colab"])
+        self.runtime_combo.setCurrentText(str(current_config.get("runtime", "local")))
+        form.addRow("Runtime Policy:", self.runtime_combo)
 
         self.preferred_gpu_edit = QLineEdit(str(current_config.get("preferred_colab_gpu", "A100")))
-        form.addRow("Preferred Colab GPU:", self.preferred_gpu_edit)
+        form.addRow("Preferred Colab GPU (fallback only):", self.preferred_gpu_edit)
 
         weights_row = QWidget()
         weights_layout = QHBoxLayout()
@@ -226,7 +225,7 @@ class InferenceParametersDialog(QDialog):
         browse_btn = QPushButton("Browse")
         browse_btn.clicked.connect(self._browse_weights)
         weights_layout.addWidget(browse_btn)
-        form.addRow("Weights (.pt):", weights_row)
+        form.addRow("Weights Override (.pt, optional):", weights_row)
 
         layout.addLayout(form)
 
@@ -240,29 +239,28 @@ class InferenceParametersDialog(QDialog):
         if weights_value and self.scan_dir is not None:
             weights_value = relativize_for_scan(self.scan_dir, weights_value)
         return {
-            "runtime": self.runtime_combo.currentText().strip() or "auto",
-            "local_device": self.local_device_edit.text().strip() or "0",
+            "runtime": self.runtime_combo.currentText().strip() or "local",
+            "local_device": "0",
             "preferred_colab_gpu": self.preferred_gpu_edit.text().strip() or "A100",
             "weights": weights_value,
         }
 
 
 class FusionParametersDialog(QDialog):
-    """Configure Fusion and georeferencing settings."""
+    """Link a completed calibration run and GPS settings."""
 
     def __init__(self, fusion_config=None, gps_config=None, scan_dir: Path | None = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Fusion and GPS Configuration")
-        self.setMinimumWidth(680)
+        self.setWindowTitle("Calibration Link and GPS Mapping")
+        self.setMinimumWidth(700)
         self.scan_dir = scan_dir
         self._setup_ui(fusion_config or {}, gps_config or {})
 
-    def _browse_json(self, target_edit: QLineEdit, title: str):
-        chosen, _ = QFileDialog.getOpenFileName(
+    def _browse_directory(self, target_edit: QLineEdit, title: str):
+        chosen = QFileDialog.getExistingDirectory(
             self,
             title,
             str(self.scan_dir) if self.scan_dir is not None else "",
-            "JSON Files (*.json);;All Files (*)",
         )
         if chosen:
             target_edit.setText(chosen)
@@ -271,13 +269,13 @@ class FusionParametersDialog(QDialog):
         layout = QVBoxLayout()
         self.setLayout(layout)
 
-        title = QLabel("Configure Fusion and GPS Mapping")
+        title = QLabel("Link Calibration Output and GPS Mapping")
         title.setStyleSheet("font-size: 16px; font-weight: bold; color: #1f3a5f; margin-bottom: 10px;")
         layout.addWidget(title)
 
         help_text = QLabel(
-            "Fusion projects YOLO masks into the SLAM point cloud, keeps dense clusters, segments instances, "
-            "measures pole spacing, and georeferences the results when tf_gps_out.csv is available."
+            "Fusion consumes outputs from two earlier modes: calibration mode provides camera intrinsics and the LiDAR-camera extrinsic transform, "
+            "and rosbag preprocessing provides the SLAM cloud, JPGs, and TF CSVs. This dialog should only link the completed calibration run and GPS lever-arm settings."
         )
         help_text.setWordWrap(True)
         help_text.setStyleSheet("color: #4b5563; background-color: #eef8ef; padding: 8px; border-radius: 4px;")
@@ -285,44 +283,16 @@ class FusionParametersDialog(QDialog):
 
         form = QFormLayout()
 
-        intrinsics_row = QWidget()
-        intrinsics_layout = QHBoxLayout()
-        intrinsics_layout.setContentsMargins(0, 0, 0, 0)
-        intrinsics_row.setLayout(intrinsics_layout)
-        self.intrinsics_edit = QLineEdit(str(fusion_config.get("intrinsics_json", "")))
-        intrinsics_layout.addWidget(self.intrinsics_edit, stretch=1)
-        intrinsics_browse = QPushButton("Browse")
-        intrinsics_browse.clicked.connect(lambda: self._browse_json(self.intrinsics_edit, "Select intrinsics JSON"))
-        intrinsics_layout.addWidget(intrinsics_browse)
-        form.addRow("Intrinsics JSON:", intrinsics_row)
-
-        extrinsics_row = QWidget()
-        extrinsics_layout = QHBoxLayout()
-        extrinsics_layout.setContentsMargins(0, 0, 0, 0)
-        extrinsics_row.setLayout(extrinsics_layout)
-        self.extrinsics_edit = QLineEdit(str(fusion_config.get("extrinsics_json", "")))
-        extrinsics_layout.addWidget(self.extrinsics_edit, stretch=1)
-        extrinsics_browse = QPushButton("Browse")
-        extrinsics_browse.clicked.connect(lambda: self._browse_json(self.extrinsics_edit, "Select extrinsics JSON"))
-        extrinsics_layout.addWidget(extrinsics_browse)
-        form.addRow("Extrinsics JSON:", extrinsics_row)
-
-        self.time_column_edit = QLineEdit(str(fusion_config.get("time_column", "t_query_sec")))
-        form.addRow("Pose Time Column:", self.time_column_edit)
-
-        self.image_filename_column_edit = QLineEdit(str(fusion_config.get("image_filename_column", "filename")))
-        form.addRow("Image Filename Column:", self.image_filename_column_edit)
-
-        self.image_time_column_edit = QLineEdit(str(fusion_config.get("image_time_column", "")))
-        form.addRow("Image Time Column:", self.image_time_column_edit)
-
-        self.time_offset_spin = QDoubleSpinBox()
-        self.time_offset_spin.setRange(-60.0, 60.0)
-        self.time_offset_spin.setDecimals(4)
-        self.time_offset_spin.setSingleStep(0.01)
-        self.time_offset_spin.setValue(float(fusion_config.get("time_offset_sec", 0.0)))
-        self.time_offset_spin.setSuffix(" s")
-        form.addRow("Time Offset:", self.time_offset_spin)
+        calibration_row = QWidget()
+        calibration_layout = QHBoxLayout()
+        calibration_layout.setContentsMargins(0, 0, 0, 0)
+        calibration_row.setLayout(calibration_layout)
+        self.calibration_run_edit = QLineEdit(str(fusion_config.get("calibration_run_dir", "")))
+        calibration_layout.addWidget(self.calibration_run_edit, stretch=1)
+        calibration_browse = QPushButton("Browse")
+        calibration_browse.clicked.connect(lambda: self._browse_directory(self.calibration_run_edit, "Select completed calibration run folder"))
+        calibration_layout.addWidget(calibration_browse)
+        form.addRow("Calibration Run Folder:", calibration_row)
 
         self.gps_offset_edit = QLineEdit(str(gps_config.get("offset_body_xyz_m", "0,0,0")))
         form.addRow("GPS->LiDAR Offset (x,y,z m):", self.gps_offset_edit)
@@ -335,20 +305,12 @@ class FusionParametersDialog(QDialog):
         layout.addWidget(button_box)
 
     def get_configs(self):
-        intrinsics_value = self.intrinsics_edit.text().strip()
-        extrinsics_value = self.extrinsics_edit.text().strip()
-        if intrinsics_value and self.scan_dir is not None:
-            intrinsics_value = relativize_for_scan(self.scan_dir, intrinsics_value)
-        if extrinsics_value and self.scan_dir is not None:
-            extrinsics_value = relativize_for_scan(self.scan_dir, extrinsics_value)
+        calibration_run_value = self.calibration_run_edit.text().strip()
+        if calibration_run_value and self.scan_dir is not None:
+            calibration_run_value = relativize_for_scan(self.scan_dir, calibration_run_value)
 
         fusion_config = {
-            "intrinsics_json": intrinsics_value,
-            "extrinsics_json": extrinsics_value,
-            "time_column": self.time_column_edit.text().strip() or "t_query_sec",
-            "time_offset_sec": self.time_offset_spin.value(),
-            "image_filename_column": self.image_filename_column_edit.text().strip() or "filename",
-            "image_time_column": self.image_time_column_edit.text().strip(),
+            "calibration_run_dir": calibration_run_value,
         }
         gps_config = {
             "offset_body_xyz_m": self.gps_offset_edit.text().strip() or "0,0,0",
@@ -471,7 +433,7 @@ class StepByStepDashboard(QWidget):
     openFilterViewerRequested = Signal(str)  # Open the point cloud filter viewer
     
     STEP_COLUMNS = {
-        "Pose Recovery": "slam",
+        "Rosbag Preprocessing": "slam",
         "Filtering": "filtering",
         "FLAI": "flai",
         "Wires": "wire_extraction",
@@ -481,12 +443,12 @@ class StepByStepDashboard(QWidget):
 
     STEP_DETAILS = {
         "slam": {
-            "title": "Pose Recovery",
-            "summary": "Replays the rosbag in Docker, runs FAST-LIO SLAM, writes scans.pcd, exports JPG frames from /image/compressed, and samples tf_camera_out.csv plus tf_gps_out.csv.",
-            "run_tooltip": "Run the full rosbag preprocessing stage: FAST-LIO SLAM + JPG export + camera/GPS TF sampling.",
+            "title": "Rosbag Preprocessing",
+            "summary": "Replays the rosbag in Docker, runs FAST-LIO SLAM, writes scans.pcd, exports JPG frames from /image/compressed, and samples both tf_camera_out.csv and tf_gps_out.csv using message timestamps.",
+            "run_tooltip": "Run the full rosbag preprocessing stage: FAST-LIO SLAM, JPG export, image timestamp CSV export, and camera/GPS TF sampling.",
             "view_tooltip": "Open the semantic viewer for this scan using the latest outputs generated so far.",
             "modify_label": "Details",
-            "modify_tooltip": "Show exactly what Pose Recovery does and which files it produces.",
+            "modify_tooltip": "Show exactly what rosbag preprocessing does and which files it produces.",
         },
         "filtering": {
             "title": "Filtering",
@@ -514,19 +476,19 @@ class StepByStepDashboard(QWidget):
         },
         "inference": {
             "title": "Image Inference",
-            "summary": "Runs YOLO segmentation on the JPG images exported during Pose Recovery and produces masks_npz/, meta_json/, pred_images/, and optionally a Colab bundle.",
-            "run_tooltip": "Run YOLO inference using the pose-recovery JPG frames for this scan.",
+            "summary": "Runs YOLO segmentation on the JPG images exported during rosbag preprocessing and produces masks_npz/, meta_json/, pred_images/, and optionally a Colab bundle.",
+            "run_tooltip": "Run YOLO inference using the preprocessing JPG frames for this scan.",
             "view_tooltip": "Open the semantic viewer for the scan. Inference artifacts are consumed by Fusion rather than viewed directly here.",
-            "modify_label": "Config",
-            "modify_tooltip": "Configure inference runtime, weights, local CUDA device, and Colab preference.",
+            "modify_label": "Runtime",
+            "modify_tooltip": "Configure local-vs-Colab runtime policy, optional weight override, and fallback Colab GPU preference.",
         },
         "fusion": {
             "title": "Fusion + GPS",
-            "summary": "Projects segmentation masks into the SLAM point cloud, applies dense-cluster cleanup and instance clustering, measures pole spacing, and georeferences the outputs when tf_gps_out.csv exists.",
+            "summary": "Projects segmentation masks into the SLAM point cloud, applies dense-cluster cleanup and instance clustering, measures pole spacing, and georeferences the outputs when tf_gps_out.csv exists. This stage consumes calibration outputs produced by direct visual LiDAR calibration, including camera intrinsics derived from /camera/camera_info.",
             "run_tooltip": "Run camera-LiDAR fusion and the GPS georeferencing/export stage for this scan.",
             "view_tooltip": "Open the semantic viewer with fused objects and wire overlays.",
-            "modify_label": "Config",
-            "modify_tooltip": "Configure calibration JSONs, time alignment, and GPS offset settings used by Fusion.",
+            "modify_label": "Calibration",
+            "modify_tooltip": "Link a completed calibration run and set the GPS lever-arm used by Fusion.",
         },
     }
     
@@ -565,7 +527,7 @@ class StepByStepDashboard(QWidget):
         main_layout.addWidget(self.table, stretch=1)
         
         # Status bar
-        self.status_label = QLabel("Step-by-Step Mode: Pose Recovery -> Wires -> Image Inference -> Fusion + GPS, with manual Filtering and FLAI hooks.")
+        self.status_label = QLabel("Post-Processing Step-By-Step: Rosbag Preprocessing -> Wires -> Image Inference -> Fusion + GPS, with manual Filtering and FLAI hooks.")
         self.status_label.setStyleSheet("color: #666; padding: 8px;")
         main_layout.addWidget(self.status_label)
         
@@ -715,7 +677,7 @@ class StepByStepDashboard(QWidget):
                 color: white;
             }
         """)
-        self.btn_run_pipeline.setToolTip("Run the automated backend chain for the selected scan: Pose Recovery -> Wires -> Image Inference -> Fusion + GPS.")
+        self.btn_run_pipeline.setToolTip("Run the automated backend chain for the selected scan: Rosbag Preprocessing -> Wires -> Image Inference -> Fusion + GPS.")
         self.btn_run_pipeline.clicked.connect(self._run_full_pipeline)
         layout.addWidget(self.btn_run_pipeline)
         
@@ -777,20 +739,22 @@ class StepByStepDashboard(QWidget):
         layout.addWidget(title)
 
         summary = QLabel(
-            "<b>Pose Recovery</b> replays the rosbag, runs FAST-LIO SLAM, writes <code>scans.pcd</code>, "
-            "exports JPGs from <code>/image/compressed</code>, and samples both <code>tf_camera_out.csv</code> "
-            "and <code>tf_gps_out.csv</code>. <b>Image Inference</b> runs YOLO on those JPGs and writes "
-            "<code>masks_npz/</code> plus <code>meta_json/</code>. <b>Fusion + GPS</b> projects the masks into "
-            "the SLAM cloud, keeps dense clusters, segments utility assets, measures pole spacing, and georeferences "
-            "the results when GPS data is available. <b>Wires</b> remains the MATLAB wire extraction path."
+            "<b>Rosbag Preprocessing</b> replays the rosbag, runs FAST-LIO SLAM, writes <code>scans.pcd</code>, "
+            "exports JPGs from <code>/image/compressed</code>, writes <code>image_timestamps.csv</code>, and samples "
+            "both <code>tf_camera_out.csv</code> and <code>tf_gps_out.csv</code>. <b>Image Inference</b> runs YOLO "
+            "on those JPGs and writes <code>masks_npz/</code> plus <code>meta_json/</code>. <b>Fusion + GPS</b> "
+            "projects the masks into the SLAM cloud, keeps dense clusters, segments utility assets, measures pole "
+            "spacing, and georeferences the results when GPS data is available. <b>Wires</b> remains the MATLAB wire "
+            "extraction path, and calibration stays in its own separate GUI mode where camera intrinsics are extracted "
+            "from <code>/camera/camera_info</code> and the LiDAR-camera extrinsic is solved."
         )
         summary.setWordWrap(True)
         summary.setStyleSheet("color: #374151; line-height: 1.35;")
         layout.addWidget(summary)
 
         legend = QLabel(
-            "Use <b>Run</b> to execute a stage, <b>View</b> to inspect the current result layer, and the right-most "
-            "button to open that stage's actual details, guide, parameters, or configuration."
+            "Use <b>Run</b> to execute a post-processing stage, <b>View</b> to inspect the current result layer, and the right-most "
+            "button to open that stage's actual details, guide, parameters, or configuration. Calibration is intentionally separate from this table."
         )
         legend.setWordWrap(True)
         legend.setStyleSheet("color: #4b5563;")
@@ -1145,7 +1109,7 @@ class StepByStepDashboard(QWidget):
             QMessageBox.information(
                 self,
                 "Filtering",
-                "No filtered or raw point cloud is available yet. Run Pose Recovery first so the scan has a point cloud to inspect.",
+                "No filtered or raw point cloud is available yet. Run Rosbag Preprocessing first so the scan has a point cloud to inspect.",
             )
             return
         self.openViewerRequested.emit(str(self.assets_path / scan_name))
@@ -1198,7 +1162,7 @@ class StepByStepDashboard(QWidget):
             QMessageBox.information(
                 self,
                 "Filtering",
-                "Filtering is a manual step. Run Pose Recovery first, then use Open/View to inspect the available point cloud in the filter tool.",
+                "Filtering is a manual step. Run Rosbag Preprocessing first, then use Open/View to inspect the available point cloud in the filter tool.",
             )
         elif step_key == "inference":
             current_config = metadata.get("config", {}).get("inference", {})
@@ -1207,7 +1171,7 @@ class StepByStepDashboard(QWidget):
                 metadata.setdefault("config", {})["inference"] = dialog.get_config()
                 self.modified_scans.add(scan_name)
                 self._show_save_button(scan_name)
-                self.add_notification(f"Updated inference settings for {scan_name}", "info")
+                self.add_notification(f"Updated inference runtime settings for {scan_name}", "info")
         elif step_key == "fusion":
             current_config = metadata.get("config", {})
             dialog = FusionParametersDialog(
@@ -1222,16 +1186,19 @@ class StepByStepDashboard(QWidget):
                 metadata.setdefault("config", {})["gps"] = gps_config
                 self.modified_scans.add(scan_name)
                 self._show_save_button(scan_name)
-                self.add_notification(f"Updated fusion settings for {scan_name}", "info")
+                self.add_notification(f"Updated calibration/GPS settings for {scan_name}", "info")
         elif step_key == "slam":
             StepInfoDialog(
-                "Pose Recovery Outputs",
+                "Rosbag Preprocessing Outputs",
                 (
                     "### What this stage does\n"
                     "- Replays the rosbag inside the Docker preprocessing environment.\n"
                     "- Runs FAST-LIO SLAM to produce the local map point cloud.\n"
                     "- Saves every `/image/compressed` frame as a JPG under the pose-recovery run folder.\n"
                     "- Writes `image_timestamps.csv`, `tf_camera_out.csv`, and `tf_gps_out.csv`.\n\n"
+                    "### What this stage does not do\n"
+                    "- It does not compute camera intrinsics or LiDAR-camera extrinsics.\n"
+                    "- Those come from the separate Calibration Mode, where intrinsics are extracted from `/camera/camera_info` and direct visual LiDAR calibration solves the extrinsic transform.\n\n"
                     "### Main outputs\n"
                     "- `processed/pose_recovery/<run>/pcd/scans.pcd`\n"
                     "- `processed/pose_recovery/<run>/images/*.jpg`\n"
@@ -1289,7 +1256,7 @@ class StepByStepDashboard(QWidget):
             self.btn_run_pipeline.setEnabled(True)
         else:
             self.selected_scan = None
-            self.status_label.setText("Step-by-Step Mode: run Pose Recovery, Wires, Image Inference, or Fusion + GPS individually.")
+            self.status_label.setText("Step-by-Step Mode: run Rosbag Preprocessing, Wires, Image Inference, or Fusion + GPS individually. Calibration is a separate mode in the toolbar.")
             self.btn_run_pipeline.setEnabled(False)
     
     def _show_notifications(self):

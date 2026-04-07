@@ -49,9 +49,13 @@ That GUI path currently:
 
 The GUI now also supports step-by-step execution for:
 
-- SLAM / pose recovery
+- Rosbag Preprocessing
 - wire extraction
-- fusion
+- image inference
+- fusion + GPS
+
+Calibration is a separate GUI mode. Fusion relies on that calibration mode
+having already produced camera intrinsics and the LiDAR-camera extrinsic.
 
 FLAI remains an external/manual stage in the current branch.
 

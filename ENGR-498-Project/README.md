@@ -39,7 +39,8 @@ The current `main.py` entrypoint launches the integrated dashboard window.
 From the GUI, the current experimental integration supports:
 
 - scan creation by importing a rosbag into `assets/<scan_name>/raw/`
-- Docker pose recovery from the dashboard
+- Docker-backed calibration mode for direct visual LiDAR calibration
+- Docker-backed rosbag preprocessing from the dashboard
 - MATLAB-driven wire extraction from the dashboard
 - local YOLO inference or Colab-bundle fallback preparation
 - Fusion and GPS georeferencing
@@ -62,13 +63,24 @@ and the dashboard orchestration layer is currently in:
 - `gui_pipeline.py`
 - `scan_metadata.py`
 
-The GUI currently supports two control styles:
+The GUI currently supports two major modes:
+
+- Calibration mode
+  - runs direct visual LiDAR calibration in Docker
+  - extracts camera intrinsics from `/camera/camera_info`
+  - solves the LiDAR-camera extrinsic transform
+  - produces calibration artifacts later consumed by Fusion
+- Post-processing mode
+  - available in both Auto mode and Step-by-step mode
+  - consumes a completed calibration run as an upstream dependency
+
+Within post-processing mode:
 
 - Auto mode
   - runs the main end-to-end backend chain for a selected scan
 - Step-by-step mode
   - runs individual backend stages for:
-    - Pose Recovery
+    - Rosbag Preprocessing
     - wire extraction
     - image inference
     - fusion + GPS
@@ -164,10 +176,20 @@ That covers:
 - runtime staging from WSL
 - Docker image build
 - calibration workflow
-- pose recovery workflow
+- rosbag preprocessing workflow
 - output locations
 
-### 3. Run rosbag preprocessing
+### 3. Run calibration mode
+
+Calibration is a separate prerequisite for Fusion. It extracts intrinsics from
+`/camera/camera_info`, solves the LiDAR-camera extrinsic with direct visual
+LiDAR calibration, and writes a calibration run under:
+
+```text
+rosbag_preprocessing/outputs/calibration/
+```
+
+### 4. Run rosbag preprocessing
 
 Outputs land under:
 
@@ -190,7 +212,7 @@ written into the selected scan folder under:
 assets/<scan_name>/processed/pose_recovery/
 ```
 
-### 4. Run YOLO inference
+### 5. Run YOLO inference
 
 Open:
 
@@ -205,7 +227,7 @@ Supported modes:
 - auto local/Colab selection
 - explicit Colab bundle generation
 
-### 5. Run fusion and georeferencing
+### 6. Run fusion and georeferencing
 
 Use the scripts in `fusion/` to:
 
@@ -213,6 +235,11 @@ Use the scripts in `fusion/` to:
 - segment instances
 - georeference objects and powerlines
 - generate Leaflet-ready outputs
+
+In the integrated GUI, Fusion does not ask the user to browse intrinsics or
+extrinsics JSON files manually. Instead, it links a completed calibration run
+and automatically exports Fusion-ready intrinsics/extrinsics artifacts from the
+calibration `calib.json`.
 
 When launched from the integrated GUI, the backend writes into the selected
 scan folder under:
@@ -235,18 +262,21 @@ python .\main.py
 
 Recommended usage:
 
-1. Create a scan from the dashboard.
-2. Select the scan.
-3. Use either:
+1. Use Calibration Mode to complete direct visual LiDAR calibration for the
+   dataset and produce calibration outputs.
+2. Create a scan from the dashboard.
+3. Select the scan.
+4. Use either:
    - Auto mode to run the main backend chain end to end, or
-   - Step-by-step mode to run Pose Recovery, wire extraction, image inference, or Fusion + GPS individually.
-4. Open the semantic viewer from the scan row.
-5. Open the map from the scan row when Fusion objects or powerline overlays are available.
+   - Step-by-step mode to run Rosbag Preprocessing, wire extraction, image inference, or Fusion + GPS individually.
+5. Open the semantic viewer from the scan row.
+6. Open the map from the scan row when Fusion objects or powerline overlays are available.
 
 Current automation boundary:
 
 - Automated from the GUI:
-  - rosbag pose recovery
+  - calibration mode
+  - rosbag preprocessing
   - JPG export
   - TF CSV export
   - wire extraction

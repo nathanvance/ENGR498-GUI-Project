@@ -10,6 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from calibration_bridge import export_fusion_calibration_artifacts, resolve_calibration_run
 from project_paths import FUSION_DIR, MATLAB_EXTRACT_DIR, ROSBAG_PREPROCESSING_DIR
 from scan_metadata import (
     load_scan_metadata,
@@ -23,6 +24,7 @@ from scan_metadata import (
 
 
 RUN_POSE_RECOVERY_SCRIPT = ROSBAG_PREPROCESSING_DIR / "launcher" / "run_transform_reading_workflow.py"
+RUN_CALIBRATION_SCRIPT = ROSBAG_PREPROCESSING_DIR / "launcher" / "run_calibration_workflow.py"
 RUN_YOLO_SCRIPT = FUSION_DIR / "run_yolo_inference.py"
 RUN_FUSION_SCRIPT = FUSION_DIR / "fuse_masks_to_slam.py"
 RUN_GEOREF_SCRIPT = FUSION_DIR / "georeference_from_tf_gps.py"
@@ -119,6 +121,44 @@ class LeafletServerManager:
         self._process = None
 
 
+class CalibrationWorkflowThread(QThread):
+    logLine = Signal(str)
+    completed = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, dataset_path: str | Path, *, run_name: str, stop_after: str | None = None, parent=None) -> None:
+        super().__init__(parent)
+        self.dataset_path = Path(dataset_path)
+        self.run_name = run_name
+        self.stop_after = stop_after
+
+    def run(self) -> None:
+        command = [
+            sys.executable,
+            str(RUN_CALIBRATION_SCRIPT),
+            str(self.dataset_path),
+            "--run-name",
+            self.run_name,
+        ]
+        if self.stop_after:
+            command.extend(["--stop-after", self.stop_after])
+
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            self.logLine.emit(line.rstrip())
+        return_code = process.wait()
+        if return_code == 0:
+            self.completed.emit(self.run_name)
+        else:
+            self.failed.emit(f"Calibration workflow failed with exit code {return_code}.")
+
+
 class BackendPipelineThread(QThread):
     logLine = Signal(str)
     stageChanged = Signal(str, str)  # stage_key, status
@@ -173,7 +213,7 @@ class BackendPipelineThread(QThread):
 
         latest_run = newest_directory(output_root)
         if latest_run is None:
-            raise FileNotFoundError(f"Pose recovery did not create an output run in {output_root}")
+            raise FileNotFoundError(f"Rosbag preprocessing did not create an output run in {output_root}")
 
         update_file_entry(metadata, scan_dir, "pose_recovery_root", output_root)
         update_file_entry(metadata, scan_dir, "latest_pose_recovery_run", latest_run)
@@ -305,6 +345,30 @@ class BackendPipelineThread(QThread):
         self._maybe_georeference(scan_dir, metadata, tf_gps_path=tf_gps_path, powerline_overlay=powerline_overlay)
         return output_dir
 
+    def _resolve_calibration_artifacts(self, scan_dir: Path, metadata: dict) -> tuple[Path, Path]:
+        fusion_cfg = metadata.get("config", {}).get("fusion", {})
+        files = metadata.get("files", {})
+
+        linked_run = resolve_scan_path(scan_dir, files.get("calibration_run_dir")) or resolve_scan_path(
+            scan_dir, fusion_cfg.get("calibration_run_dir")
+        )
+        calibration_run = resolve_calibration_run(linked_run, fallback_to_latest=True)
+        if calibration_run is None or not calibration_run.is_dir():
+            raise FileNotFoundError(
+                "No calibration run was found. Complete calibration mode first, then link the calibration output to this scan."
+            )
+
+        calibration_output_dir = scan_dir / "processed" / "calibration"
+        calib_json_path, intrinsics_json, extrinsics_json = export_fusion_calibration_artifacts(
+            calibration_run, calibration_output_dir
+        )
+        update_file_entry(metadata, scan_dir, "calibration_run_dir", calibration_run)
+        update_file_entry(metadata, scan_dir, "calibration_calib_json", calib_json_path)
+        update_file_entry(metadata, scan_dir, "resolved_intrinsics_json", intrinsics_json)
+        update_file_entry(metadata, scan_dir, "resolved_extrinsics_json", extrinsics_json)
+        save_scan_metadata(scan_dir, metadata)
+        return intrinsics_json, extrinsics_json
+
     def _run_yolo_inference(self, scan_dir: Path, metadata: dict, pose_run: Path) -> tuple[Path, Path, Path]:
         config = metadata.get("config", {})
         inference_cfg = config.get("inference", {})
@@ -365,12 +429,7 @@ class BackendPipelineThread(QThread):
             update_status(metadata, "inference", "done")
             save_scan_metadata(scan_dir, metadata)
 
-        intrinsics_path = resolve_scan_path(scan_dir, fusion_cfg.get("intrinsics_json"))
-        extrinsics_path = resolve_scan_path(scan_dir, fusion_cfg.get("extrinsics_json"))
-        if intrinsics_path is None or not intrinsics_path.is_file():
-            raise FileNotFoundError("Fusion intrinsics JSON is missing. Configure it in the scan metadata.")
-        if extrinsics_path is None or not extrinsics_path.is_file():
-            raise FileNotFoundError("Fusion extrinsics JSON is missing. Configure it in the scan metadata.")
+        intrinsics_path, extrinsics_path = self._resolve_calibration_artifacts(scan_dir, metadata)
 
         fusion_output_dir = scan_dir / "processed" / "fusion"
         fusion_output_dir.mkdir(parents=True, exist_ok=True)
@@ -395,16 +454,13 @@ class BackendPipelineThread(QThread):
             "--output-dir",
             str(fusion_output_dir),
             "--time-column",
-            str(fusion_cfg.get("time_column", "t_query_sec")),
+            "t_query_sec",
             "--image-filename-column",
-            str(fusion_cfg.get("image_filename_column", "filename")),
+            "filename",
             "--time-offset-sec",
             str(fusion_cfg.get("time_offset_sec", 0.0)),
             "--no-visualize",
         ]
-        image_time_column = str(fusion_cfg.get("image_time_column", "") or "").strip()
-        if image_time_column:
-            fusion_command.extend(["--image-time-column", image_time_column])
         self.run_command(fusion_command)
 
         update_file_entry(metadata, scan_dir, "fused_objects", fusion_output_dir / "fused_objects.json")
@@ -445,7 +501,7 @@ class BackendPipelineThread(QThread):
                     pose_root = resolve_scan_path(scan_dir, metadata["files"].get("pose_recovery_root"))
                     pose_run = newest_directory(pose_root) if pose_root is not None else None
                 if pose_run is None or not pose_run.is_dir():
-                    raise FileNotFoundError("No pose recovery output was found for this scan.")
+                    raise FileNotFoundError("No rosbag preprocessing output was found for this scan.")
 
             if self.mode in {"full", "wire-extraction"}:
                 active_stage = "wire_extraction"
@@ -457,7 +513,7 @@ class BackendPipelineThread(QThread):
                 active_stage = "inference"
                 self.stageChanged.emit("inference", "running")
                 if pose_run is None:
-                    raise FileNotFoundError("Image inference requires a pose recovery output run for this scan.")
+                    raise FileNotFoundError("Image inference requires a rosbag preprocessing output run for this scan.")
                 self._run_yolo_inference(scan_dir, metadata, pose_run)
                 self.stageChanged.emit("inference", "done")
 
@@ -465,7 +521,7 @@ class BackendPipelineThread(QThread):
                 active_stage = "fusion"
                 self.stageChanged.emit("fusion", "running")
                 if pose_run is None:
-                    raise FileNotFoundError("Fusion requires a pose recovery output run for this scan.")
+                    raise FileNotFoundError("Fusion requires a rosbag preprocessing output run for this scan.")
                 self._run_yolo_and_fusion(scan_dir, metadata, pose_run)
                 self.stageChanged.emit("fusion", "done")
 

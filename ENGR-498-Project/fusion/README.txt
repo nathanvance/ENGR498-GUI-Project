@@ -36,10 +36,13 @@ runs inference/fusion/georeferencing, and then opens:
 - the Leaflet map when object or powerline JSON outputs are available
 
 The GUI also supports step-by-step execution for:
-- Pose Recovery
+- Rosbag Preprocessing
 - wire extraction
 - image inference
 - fusion + GPS
+
+Calibration is a separate GUI mode. Fusion depends on that calibration mode
+having been completed first.
 
 FLAI remains an external/manual stage in the current experimental branch.
 
@@ -139,9 +142,17 @@ Expected Inputs
    - height
    - distortion
 
+   In the integrated GUI branch, this file is derived automatically from the
+   calibration run produced by direct visual LiDAR calibration. The underlying
+   calibration workflow extracts camera intrinsics from the `/camera/camera_info`
+   topic in the calibration bag(s).
+
 2. extrinsics.json
    Expected format:
    - T_lidar_cam as a 4x4 transform matrix
+
+   In the integrated GUI branch, this file is also derived automatically from
+   the calibration run's `calib.json`.
 
 3. pose CSV
    The tested schema is:
