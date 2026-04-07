@@ -42,6 +42,17 @@ sync_file() {
   cp -f "$src" "$dst"
 }
 
+rewrite_catkin_marker() {
+  local marker_path="$1"
+  local source_root="$2"
+
+  if [[ ! -f "$marker_path" ]]; then
+    return 0
+  fi
+
+  printf '%s\n' "$source_root" >"$marker_path"
+}
+
 patch_container_shell_scripts() {
   python3 - "$HOME_ROOT" <<'PY'
 from pathlib import Path
@@ -64,6 +75,7 @@ safe_blocks = {
         'set +u\n'
         'source /opt/ros/${ROS_DISTRO}/setup.bash\n'
         'source "$HOME/ws_calib/devel/setup.bash"\n'
+        'export ROS_PACKAGE_PATH="$HOME/ws_calib/src${ROS_PACKAGE_PATH:+:$ROS_PACKAGE_PATH}"\n'
         'set -u',
     ),
     home_root / "ws_livox/scripts/run_pose_recovery_camera_gps.sh": (
@@ -72,6 +84,7 @@ safe_blocks = {
         'set +u\n'
         'source /opt/ros/${ROS_DISTRO}/setup.bash\n'
         'source "$HOME/ws_livox/devel/setup.bash"\n'
+        'export ROS_PACKAGE_PATH="$HOME/ws_livox/src${ROS_PACKAGE_PATH:+:$ROS_PACKAGE_PATH}"\n'
         'set -u',
     ),
 }
@@ -148,6 +161,7 @@ insertion = (
     'set +u\n'
     'source /opt/ros/${ROS_DISTRO}/setup.bash\n'
     'source "$HOME/ws_livox/devel/setup.bash"\n'
+    'export ROS_PACKAGE_PATH="$HOME/ws_livox/src${ROS_PACKAGE_PATH:+:$ROS_PACKAGE_PATH}"\n'
     'set -u\n\n'
 )
 if marker in text and 'source "$HOME/ws_livox/devel/setup.bash"' not in text:
@@ -168,6 +182,7 @@ sync_glob() {
 }
 
 sync_tree "${WS_CALIB_ROOT}/devel" "${HOME_ROOT}/ws_calib/devel"
+rewrite_catkin_marker "${HOME_ROOT}/ws_calib/devel/.catkin" "${HOME_ROOT}/ws_calib/src"
 
 sync_tree "${WS_CALIB_ROOT}/src/direct_visual_lidar_calibration" "${HOME_ROOT}/ws_calib/src/direct_visual_lidar_calibration" \
   --exclude .git \
@@ -181,6 +196,7 @@ sync_tree "${WS_CALIB_ROOT}/scripts" "${HOME_ROOT}/ws_calib/scripts" \
   --exclude __pycache__
 
 sync_tree "${WS_LIVOX_ROOT}/devel" "${HOME_ROOT}/ws_livox/devel"
+rewrite_catkin_marker "${HOME_ROOT}/ws_livox/devel/.catkin" "${HOME_ROOT}/ws_livox/src"
 
 sync_tree "${WS_LIVOX_ROOT}/src/FAST_LIO" "${HOME_ROOT}/ws_livox/src/FAST_LIO" \
   --exclude .git \
