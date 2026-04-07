@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Maintainer-only helper.
+# This refreshes the committed runtime staged in context/runtime/ from a known-
+# good local WSL development environment. Normal users should not need to run
+# this before building the Docker image.
+
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTEXT_ROOT="${PROJECT_ROOT}/context/runtime"
 RUNTIME_USER="${PORTABLE_ROS_RUNTIME_USER:-portable}"
 HOME_ROOT="${CONTEXT_ROOT}/home/${RUNTIME_USER}"
 USR_LOCAL_ROOT="${CONTEXT_ROOT}/usr_local"
 OVERRIDES_ROOT="${PROJECT_ROOT}/overrides"
-WSL_HOME_ROOT="${WSL_HOME_ROOT:-$HOME}"
+DEFAULT_WSL_STAGING_ROOT="${HOME}/Senior_Design_Docker_Image"
+WSL_HOME_ROOT="${WSL_HOME_ROOT:-${DEFAULT_WSL_STAGING_ROOT}}"
 WS_CALIB_ROOT="${WS_CALIB_ROOT:-${WSL_HOME_ROOT}/ws_calib}"
 WS_LIVOX_ROOT="${WS_LIVOX_ROOT:-${WSL_HOME_ROOT}/ws_livox}"
 IRIDESCENCE_ROOT="${IRIDESCENCE_ROOT:-${WSL_HOME_ROOT}/iridescence}"
 GLFW_SHIM_PATH="${GLFW_SHIM_PATH:-${WSL_HOME_ROOT}/lib/libglfw_hint_shim.so}"
 USR_LOCAL_PREFIX="${USR_LOCAL_PREFIX:-/usr/local}"
+
+mkdir -p "${WSL_HOME_ROOT}"
 
 rm -rf "${CONTEXT_ROOT}"
 mkdir -p "${HOME_ROOT}" "${USR_LOCAL_ROOT}/lib" "${USR_LOCAL_ROOT}/share"
@@ -25,6 +33,18 @@ need_cmd() {
 }
 
 need_cmd rsync
+
+require_dir() {
+  local path="$1"
+  local label="$2"
+  [[ -d "$path" ]] || MISSING_INPUTS+=("${label}: ${path}")
+}
+
+require_file() {
+  local path="$1"
+  local label="$2"
+  [[ -f "$path" ]] || MISSING_INPUTS+=("${label}: ${path}")
+}
 
 sync_tree() {
   local src="$1"
@@ -180,6 +200,37 @@ sync_glob() {
   done
   shopt -u nullglob
 }
+
+MISSING_INPUTS=()
+require_dir "${WS_CALIB_ROOT}" "Required WSL calibration workspace root"
+require_dir "${WS_CALIB_ROOT}/devel" "Required WSL calibration workspace devel space"
+require_dir "${WS_CALIB_ROOT}/src/direct_visual_lidar_calibration" "Required WSL calibration source package"
+require_dir "${WS_CALIB_ROOT}/scripts" "Required WSL calibration scripts"
+require_dir "${WS_LIVOX_ROOT}" "Required WSL Livox workspace root"
+require_dir "${WS_LIVOX_ROOT}/devel" "Required WSL Livox workspace devel space"
+require_dir "${WS_LIVOX_ROOT}/src/FAST_LIO" "Required WSL FAST_LIO source tree"
+require_dir "${WS_LIVOX_ROOT}/src/livox_ros_driver" "Required WSL livox_ros_driver source tree"
+require_dir "${WS_LIVOX_ROOT}/scripts" "Required WSL Livox scripts"
+require_dir "${IRIDESCENCE_ROOT}" "Required WSL iridescence root"
+require_dir "${IRIDESCENCE_ROOT}/build" "Required WSL iridescence build output directory"
+require_file "${GLFW_SHIM_PATH}" "Required GLFW shim library"
+
+if [[ ${#MISSING_INPUTS[@]} -gt 0 ]]; then
+  echo "ERROR: sync_wsl_context.sh cannot refresh the embedded Docker runtime on this machine." >&2
+  echo "This script is maintainer-only and requires an existing local WSL development runtime." >&2
+  echo >&2
+  echo "Missing prerequisites:" >&2
+  for item in "${MISSING_INPUTS[@]}"; do
+    echo "  - ${item}" >&2
+  done
+  echo >&2
+  echo "Default maintainer staging root:" >&2
+  echo "  ${WSL_HOME_ROOT}" >&2
+  echo >&2
+  echo "Normal users do not need this script. Use build_image_wsl.sh to build from the" >&2
+  echo "runtime already committed to the repo." >&2
+  exit 2
+fi
 
 sync_tree "${WS_CALIB_ROOT}/devel" "${HOME_ROOT}/ws_calib/devel"
 rewrite_catkin_marker "${HOME_ROOT}/ws_calib/devel/.catkin" "${HOME_ROOT}/ws_calib/src"

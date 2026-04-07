@@ -56,9 +56,16 @@ WORKDIR /workspace
 COPY context/runtime/home/portable ${PORTABLE_ROS_HOME}
 COPY context/runtime/usr_local/lib /usr/local/lib
 COPY context/runtime/usr_local/share /usr/local/share
+COPY overrides /opt/portable_ros_stack/overrides
 COPY docker/ros_entrypoint.sh /ros_entrypoint.sh
 
 RUN chmod +x /ros_entrypoint.sh \
+  && if [[ -d /opt/portable_ros_stack/overrides/ws_calib/scripts ]]; then rsync -a /opt/portable_ros_stack/overrides/ws_calib/scripts/ "${PORTABLE_ROS_HOME}/ws_calib/scripts/"; fi \
+  && if [[ -d /opt/portable_ros_stack/overrides/ws_livox/scripts ]]; then rsync -a /opt/portable_ros_stack/overrides/ws_livox/scripts/ "${PORTABLE_ROS_HOME}/ws_livox/scripts/"; fi \
+  && if [[ -f /usr/local/lib/libgtsam.so.4.2.0 ]]; then ln -sf libgtsam.so.4.2.0 /usr/local/lib/libgtsam.so.4 && ln -sf libgtsam.so.4 /usr/local/lib/libgtsam.so; fi \
+  && if [[ -f /usr/local/lib/libgtsam_unstable.so.4.2.0 ]]; then ln -sf libgtsam_unstable.so.4.2.0 /usr/local/lib/libgtsam_unstable.so.4 && ln -sf libgtsam_unstable.so.4 /usr/local/lib/libgtsam_unstable.so; fi \
+  && if [[ -f /usr/local/lib/libiridescence.so.1.0.1 ]]; then ln -sf libiridescence.so.1.0.1 /usr/local/lib/libiridescence.so.1 && ln -sf libiridescence.so.1 /usr/local/lib/libiridescence.so; fi \
+  && if [[ -f "${PORTABLE_ROS_HOME}/iridescence/build/libiridescence.so.1.0.1" ]]; then ln -sf libiridescence.so.1.0.1 "${PORTABLE_ROS_HOME}/iridescence/build/libiridescence.so.1" && ln -sf libiridescence.so.1 "${PORTABLE_ROS_HOME}/iridescence/build/libiridescence.so"; fi \
   && if compgen -G "${PORTABLE_ROS_HOME}/ws_calib/scripts/*.sh" > /dev/null; then chmod +x "${PORTABLE_ROS_HOME}"/ws_calib/scripts/*.sh; fi \
   && if compgen -G "${PORTABLE_ROS_HOME}/ws_livox/scripts/*.sh" > /dev/null; then chmod +x "${PORTABLE_ROS_HOME}"/ws_livox/scripts/*.sh; fi \
   && ldconfig \

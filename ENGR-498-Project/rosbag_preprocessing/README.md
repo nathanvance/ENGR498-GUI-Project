@@ -1,7 +1,19 @@
 # Rosbag Preprocessing
 
 This folder contains the Docker/Compose project used to run the Linux ROS
-preprocessing workflows from Windows:
+preprocessing workflows from Windows.
+
+Normal user expectation:
+
+- clone the repo
+- start Docker Desktop
+- run `bash scripts/build_image_wsl.sh`
+- use the GUI or the launcher scripts
+
+You do **not** need local `ws_calib`, `ws_livox`, or `iridescence` folders on
+the host machine just to build the image from this repo.
+
+This stack provides:
 
 - direct visual LiDAR calibration
 - FAST-LIO rosbag preprocessing / SLAM
@@ -37,8 +49,46 @@ The repo copy is designed to be portable at the source/configuration level:
   developer username
 - outputs default to mounted repo folders under `outputs/`
 
-The runtime packaging approach is unchanged: the image is still built from a
-staged WSL runtime that includes the already-working catkin `devel` spaces.
+The image is built from the staged ROS runtime stored in:
+
+```text
+context/runtime/
+```
+
+That staged runtime includes the ROS workspaces and libraries needed by the
+containerized calibration and rosbag preprocessing flows.
+
+
+## Quick Start
+
+### 1. Start Docker Desktop
+
+Make sure:
+
+- Docker Desktop is running
+- WSL2 is installed
+
+### 2. Build the image
+
+From a WSL shell opened in this folder:
+
+```bash
+bash scripts/build_image_wsl.sh
+```
+
+### 3. Run a workflow
+
+Calibration:
+
+```powershell
+python .\launcher\run_calibration_workflow.py <dataset_path> --run-name test1_manual
+```
+
+Pose recovery / TF export:
+
+```powershell
+python .\launcher\run_transform_reading_workflow.py <bag_path> --image-topic /camera/image/compressed --gps-topic /fix
+```
 
 
 ## Host Requirements
@@ -47,8 +97,15 @@ Required:
 
 - Windows
 - WSL2
-- Docker Desktop with WSL integration enabled
+- Docker Desktop
 - Python on Windows for the launcher scripts
+
+Recommended:
+
+- Docker Desktop WSL integration enabled
+
+The helper scripts and launchers fall back to `docker.exe` from WSL if the
+Linux-side `docker` CLI is not available.
 
 The recommended Windows-side Python environment for the repo is installed from
 the project root with:
@@ -105,7 +162,8 @@ Important folders:
 ## Why The Staged Runtime Still Matters
 
 This project still depends on staged runtime artifacts copied from a known-good
-WSL setup. That staging process includes the catkin `devel` spaces from:
+ROS/WSL setup. That staged runtime is now checked into the repo under
+`context/runtime/`. It includes the catkin `devel` spaces from:
 
 - `ws_calib`
 - `ws_livox`
@@ -115,21 +173,46 @@ are intentionally preserved as part of the runtime packaging flow. The portable
 change in this branch is that the repo no longer hardcodes one developer's
 username or old folder names to find them.
 
-Do not delete the source WSL `devel` folders if you still plan to rebuild the
-Docker image from the working WSL environment.
+Normal users do not need any of those upstream workspaces locally.
+
+Maintainers only:
+
+- if you want to refresh the embedded runtime from a newer development machine,
+  you can still do that
+- the default maintainer-side staging root is now:
+
+```text
+~/Senior_Design_Docker_Image/
+```
+
+Expected maintainer refresh layout by default:
+
+```text
+~/Senior_Design_Docker_Image/
+  ws_calib/
+  ws_livox/
+  iridescence/
+  lib/
+    libglfw_hint_shim.so
+```
+
+You can still override all of those locations with environment variables.
 
 
 ## Runtime Staging Inputs
 
-Before building the image, `scripts/sync_wsl_context.sh` copies the required
-runtime files into `context/runtime/`.
+This section only matters to maintainers who want to refresh the committed
+runtime. Normal users can skip it.
 
-By default it assumes the common WSL layout:
+When explicitly invoked, `scripts/sync_wsl_context.sh` copies the required
+runtime files from a known-good WSL environment into `context/runtime/`.
 
-- `~/ws_calib`
-- `~/ws_livox`
-- `~/iridescence`
-- `~/lib/libglfw_hint_shim.so`
+By default it looks under:
+
+- `~/Senior_Design_Docker_Image/ws_calib`
+- `~/Senior_Design_Docker_Image/ws_livox`
+- `~/Senior_Design_Docker_Image/iridescence`
+- `~/Senior_Design_Docker_Image/lib/libglfw_hint_shim.so`
 
 You can override that layout with environment variables:
 
@@ -158,8 +241,23 @@ bash scripts/build_image_wsl.sh
 
 That script:
 
-1. syncs the staged runtime into `context/runtime/`
+1. verifies the committed runtime exists in `context/runtime/`
 2. builds the Docker image with Compose
+
+Important:
+
+- the build helper creates repo-side folders like `outputs/` and `dist/`
+- it does **not** require upstream WSL ROS folders on a normal user machine
+- it builds directly from the runtime that ships in this repo
+
+Maintainer-only refresh flow:
+
+```bash
+bash scripts/build_image_wsl.sh --refresh-runtime
+```
+
+That path first reruns `scripts/sync_wsl_context.sh`, so it still requires the
+maintainer-side WSL runtime folders described above.
 
 Image tag:
 
@@ -187,6 +285,14 @@ Load an existing archive from a WSL shell opened in this folder:
 ```bash
 docker load -i ./dist/portable-ros-stack-noetic.tar
 ```
+
+For another machine, either of these paths is supported:
+
+1. run `bash scripts/build_image_wsl.sh` directly from the repo copy
+2. load a previously exported archive with `docker load -i ...`
+
+You no longer need local `ws_calib` / `ws_livox` folders just to build the
+image from this repo.
 
 
 ## Outputs
@@ -318,8 +424,10 @@ the user-specific hardcoded paths that were removed from the repo.
 If the launcher exits immediately:
 
 - make sure Docker Desktop is running
-- make sure WSL integration is enabled
-- confirm `wsl bash -lc "docker --version"` works
+- make sure WSL2 is installed
+- confirm either:
+  - `wsl bash -lc "docker --version"` works, or
+  - `wsl bash -lc "docker.exe --version"` works
 
 If the calibration GUIs are slow or unusable:
 

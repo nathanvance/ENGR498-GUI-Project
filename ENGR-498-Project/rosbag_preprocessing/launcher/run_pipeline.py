@@ -83,9 +83,15 @@ def main() -> int:
         shlex.quote(arg)
         for arg in ["./docker/run_pipeline.sh", args.mode, *normalized_args]
     )
+    docker_selector = (
+        'if command -v docker >/dev/null 2>&1 && docker version >/dev/null 2>&1; then DOCKER_CMD=docker; '
+        'elif command -v docker.exe >/dev/null 2>&1; then DOCKER_CMD=docker.exe; '
+        'else echo "ERROR: neither docker nor docker.exe is available." >&2; exit 2; fi'
+    )
     docker_cmd = (
         f"cd {shlex.quote(project_root_wsl)} && "
-        f"docker compose run -T --rm "
+        f"{docker_selector} && "
+        f"\"$DOCKER_CMD\" compose run -T --rm "
         f"portable-ros-stack "
         f"bash -lc {shlex.quote(f'exec {inner_command}')}"
     )

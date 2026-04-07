@@ -173,8 +173,7 @@ Open:
 
 That covers:
 
-- runtime staging from WSL
-- Docker image build
+- Docker image build from the committed runtime
 - calibration workflow
 - rosbag preprocessing workflow
 - output locations
