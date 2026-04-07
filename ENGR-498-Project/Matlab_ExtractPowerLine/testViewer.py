@@ -9,7 +9,7 @@ def main():
     app = QApplication(sys.argv)
 
     viewer = SemanticViewer()
-    viewer.initialize_viewer()
+    viewer.initialize_viewer(sys.argv[1] if len(sys.argv) > 1 else None)
     viewer.show()
 
     sys.exit(app.exec())

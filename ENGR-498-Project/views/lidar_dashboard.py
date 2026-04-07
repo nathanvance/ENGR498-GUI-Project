@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon
 
+from scan_metadata import load_scan_metadata
+
 
 class StatusIndicator(QWidget):
     """Visual status indicator with icon and color"""
@@ -170,7 +172,8 @@ class DashboardView(QWidget):
     """Main dashboard control center (Auto Mode)"""
     
     # Signals
-    openViewerRequested = Signal(str)  # file_path
+    openViewerRequested = Signal(str)  # scan_path
+    openMapRequested = Signal(str)  # scan_path
     runPipelineRequested = Signal(str)  # scan_path
     createScanRequested = Signal()
     switchToStepModeRequested = Signal()  # NEW: Switch to step-by-step mode
@@ -443,20 +446,19 @@ class DashboardView(QWidget):
         if not self.assets_path.exists():
             self.assets_path.mkdir(parents=True, exist_ok=True)
             return
+
+        self.scans_data = {}
         
         # Load all scan metadata
         for scan_dir in self.assets_path.iterdir():
             if not scan_dir.is_dir():
                 continue
-            
-            metadata_file = scan_dir / "metadata.json"
-            if metadata_file.exists():
-                try:
-                    with open(metadata_file, 'r') as f:
-                        metadata = json.load(f)
-                        self.scans_data[scan_dir.name] = metadata
-                except Exception as e:
-                    print(f"Error loading metadata for {scan_dir.name}: {e}")
+
+            try:
+                _, metadata = load_scan_metadata(scan_dir)
+                self.scans_data[scan_dir.name] = metadata
+            except Exception as e:
+                print(f"Error loading metadata for {scan_dir.name}: {e}")
         
         self._update_table()
     
@@ -534,7 +536,6 @@ class DashboardView(QWidget):
         widget.setLayout(layout)
         
         status_dict = metadata.get("status", {})
-        files_dict = metadata.get("files", {})
         
         # View Result button (if any step is complete)
         if any(s == "done" for s in status_dict.values()):
@@ -552,15 +553,26 @@ class DashboardView(QWidget):
                     background-color: #45a049;
                 }
             """)
-            # Find most recent completed step
-            for step_key in reversed(list(self.STEP_COLUMNS.values())):
-                if status_dict.get(step_key) == "done":
-                    file_key = self._get_file_key(step_key)
-                    if file_key and file_key in files_dict:
-                        file_path = str(self.assets_path / scan_name / files_dict[file_key])
-                        btn_view.clicked.connect(lambda checked, fp=file_path: self.openViewerRequested.emit(fp))
-                        break
+            scan_path = str(self.assets_path / scan_name)
+            btn_view.clicked.connect(lambda checked=False, sp=scan_path: self.openViewerRequested.emit(sp))
             layout.addWidget(btn_view)
+
+            btn_map = QPushButton("Map")
+            btn_map.setStyleSheet("""
+                QPushButton {
+                    background-color: #1976D2;
+                    color: white;
+                    border: none;
+                    padding: 6px 10px;
+                    border-radius: 4px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #125A9C;
+                }
+            """)
+            btn_map.clicked.connect(lambda checked=False, sp=scan_path: self.openMapRequested.emit(sp))
+            layout.addWidget(btn_map)
         
         # Delete button
         btn_delete = QPushButton("🗑")

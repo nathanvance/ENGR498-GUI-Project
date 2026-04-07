@@ -16,6 +16,7 @@ Main scripts:
 - `fuse_masks_to_slam.py`
 - `georeference_from_tf_gps.py`
 - `export_powerlines_to_leaflet.py`
+- `run_yolo_inference.py`
 
 Supporting folders:
 
@@ -30,5 +31,28 @@ Example workflow:
 2. Run `fuse_masks_to_slam.py`
 3. Run `georeference_from_tf_gps.py`
 4. Open the Leaflet viewer with the generated JSON outputs
+
+The experimental GUI integration also calls these scripts from the dashboard:
+
+- `testDashboard.py`
+- `gui_pipeline.py`
+
+That GUI path currently:
+
+1. consumes the JPGs and CSV outputs from `rosbag_preprocessing`,
+2. reuses the per-scan wire extraction outputs when present,
+3. runs `run_yolo_inference.py`,
+4. runs `fuse_masks_to_slam.py`,
+5. runs `georeference_from_tf_gps.py`,
+6. opens the semantic viewer with wire + Fusion overlays together,
+7. opens the Leaflet map when JSON outputs are present.
+
+The GUI now also supports step-by-step execution for:
+
+- SLAM / pose recovery
+- wire extraction
+- fusion
+
+FLAI remains an external/manual stage in the current branch.
 
 Detailed usage and algorithm notes live in `README.txt`.

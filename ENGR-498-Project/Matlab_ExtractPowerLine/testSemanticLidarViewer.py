@@ -24,6 +24,12 @@ from project_paths import (
     DEFAULT_WIRES_NPZ_PATH,
     DEFAULT_WIRE_INFO_JSON_PATH,
 )
+from scan_metadata import load_scan_metadata, resolve_artifact_paths
+from semantic_overlay_loader import (
+    format_fusion_info,
+    load_fusion_objects,
+    load_pole_neighbor_links,
+)
 
 LAS_PATH = DEFAULT_LAS_PATH
 
@@ -52,19 +58,35 @@ CLASS_NAME_MAP = {
 
 
 def load_las_xyz_and_classes(path):
-    las = laspy.read(path)
-    xyz = np.vstack((las.x, las.y, las.z)).T
-    classes = None
-    try:
-        # Try to get classification data
-        classes = np.array(las.classification, dtype=np.int32)
-        print(f"Loaded {len(classes)} points with classifications")
-        unique_classes = np.unique(classes)
-        print(f"Unique classes found: {unique_classes}")
-    except Exception as e:
-        print(f"Warning: Could not load classification data: {e}")
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix in {".las", ".laz"}:
+        las = laspy.read(path)
+        xyz = np.vstack((las.x, las.y, las.z)).T
+        classes = None
+        try:
+            # Try to get classification data
+            classes = np.array(las.classification, dtype=np.int32)
+            print(f"Loaded {len(classes)} points with classifications")
+            unique_classes = np.unique(classes)
+            print(f"Unique classes found: {unique_classes}")
+        except Exception as e:
+            print(f"Warning: Could not load classification data: {e}")
+            classes = np.zeros(xyz.shape[0], dtype=np.int32)
+        return xyz, classes
+
+    if suffix in {".pcd", ".ply"}:
+        import open3d as o3d
+
+        cloud = o3d.io.read_point_cloud(str(path))
+        xyz = np.asarray(cloud.points, dtype=np.float64)
+        if xyz.size == 0:
+            raise ValueError(f"Point cloud is empty: {path}")
         classes = np.zeros(xyz.shape[0], dtype=np.int32)
-    return xyz, classes
+        print(f"Loaded {len(classes)} points from {path.name} without classifications")
+        return xyz, classes
+
+    raise ValueError(f"Unsupported point cloud file type for semantic viewer: {path}")
 
 
 def generate_deterministic_colors(n, seed=0):
@@ -169,6 +191,26 @@ class SemanticViewer(QWidget):
         right_layout.addWidget(wires_widget, stretch=1)
 
         # ------------------------
+        # Fusion objects panel
+        # ------------------------
+        fusion_widget = QWidget()
+        fusion_layout = QVBoxLayout()
+        fusion_layout.setContentsMargins(4, 4, 4, 4)
+        fusion_widget.setLayout(fusion_layout)
+
+        fusion_layout.addWidget(QLabel("Fusion Objects", alignment=Qt.AlignLeft))
+        self.fusion_scroll = QScrollArea()
+        self.fusion_scroll.setWidgetResizable(True)
+        fusion_content = QWidget()
+        self.fusion_content_layout = QVBoxLayout()
+        self.fusion_content_layout.setContentsMargins(0, 0, 0, 0)
+        fusion_content.setLayout(self.fusion_content_layout)
+        self.fusion_scroll.setWidget(fusion_content)
+        fusion_layout.addWidget(self.fusion_scroll, stretch=1)
+        fusion_layout.addStretch()
+        right_layout.addWidget(fusion_widget, stretch=1)
+
+        # ------------------------
         # Wire Info panel
         # ------------------------
         info_widget = QWidget()
@@ -176,9 +218,14 @@ class SemanticViewer(QWidget):
         info_layout.setContentsMargins(4,4,4,4)
         info_widget.setLayout(info_layout)
 
-        info_title = QLabel("Wire Info")
+        info_title = QLabel("Selection Info")
         info_title.setStyleSheet("font-weight:bold; font-size:14px;")
         info_layout.addWidget(info_title)
+
+        self.btn_open_map = QPushButton("Open Map")
+        self.btn_open_map.setEnabled(False)
+        self.btn_open_map.clicked.connect(self._open_map_for_current_scan)
+        info_layout.addWidget(self.btn_open_map)
 
         self.info_label = QLabel("Select a wire to see details.")
         self.info_label.setWordWrap(True)
@@ -206,6 +253,16 @@ class SemanticViewer(QWidget):
         self.ground_clearances = []  # list of (clearance, lowest_point, ground_point)
         self.catenary_params = []  # list of catenary parameters (a, b, c, t0, mean_xy, u_xy, mean_perp, perp_xy)
         self.wire_sags = []  # list of sag values in meters
+        self.fusion_objects = []
+        self.fusion_object_actors = []
+        self.fusion_bbox_actors = []
+        self.fusion_orig_colors = []
+        self.fusion_widgets = []
+        self.selected_fusion_index = None
+        self.pole_distance_actors = []
+        self.current_scan_dir = None
+        self.current_scan_metadata = None
+        self._open_map_callback = None
 
         self.xyz = None
         self.classes = None
@@ -424,6 +481,65 @@ class SemanticViewer(QWidget):
             return
         self._set_visibility(self.las_actor, visible)
         self.plotter.render()
+
+    def set_open_map_callback(self, callback):
+        self._open_map_callback = callback
+
+    def _open_map_for_current_scan(self):
+        if self._open_map_callback is None or self.current_scan_dir is None:
+            return
+        self._open_map_callback(self.current_scan_dir, self.current_scan_metadata or {})
+
+    def load_scan_outputs(self, scan_ref):
+        scan_dir, metadata = load_scan_metadata(scan_ref)
+        self.current_scan_dir = scan_dir
+        self.current_scan_metadata = metadata
+
+        artifacts = resolve_artifact_paths(scan_dir, metadata)
+        base_cloud = (
+            artifacts.get("segmented")
+            or artifacts.get("filtered")
+            or artifacts.get("las")
+            or artifacts.get("pcd")
+            or Path(DEFAULT_LAS_PATH)
+        )
+        self.load_las_file(base_cloud)
+
+        wires_npz = artifacts.get("wires_points")
+        wire_info = artifacts.get("wire_info")
+        ground_points = artifacts.get("ground_points")
+        if wires_npz is not None and wires_npz.is_file():
+            try:
+                self.load_saved_wire_files(
+                    points_npz_path=wires_npz,
+                    info_json_path=wire_info if wire_info is not None else DEFAULT_WIRE_INFO_JSON_PATH,
+                    ground_npz_path=ground_points if ground_points is not None else DEFAULT_GROUND_POINTS_NPZ_PATH,
+                )
+            except Exception as exc:
+                print("Failed to load scan wire outputs:", exc)
+                self._clear_wires()
+        else:
+            self._clear_wires()
+
+        fused_objects = artifacts.get("georeferenced_objects") or artifacts.get("fused_objects")
+        pole_distances = artifacts.get("pole_neighbor_distances")
+        if fused_objects is not None and fused_objects.is_file():
+            try:
+                self.load_fusion_overlay(fused_objects, pole_distances)
+            except Exception as exc:
+                print("Failed to load fusion overlay:", exc)
+                self._clear_fusion()
+        else:
+            self._clear_fusion()
+
+        map_ready = False
+        if artifacts.get("georeferenced_objects") is not None and artifacts["georeferenced_objects"].is_file():
+            map_ready = True
+        elif artifacts.get("fused_objects") is not None and artifacts["fused_objects"].is_file():
+            map_ready = True
+        elif artifacts.get("powerline_overlay") is not None and artifacts["powerline_overlay"].is_file():
+            map_ready = True
+        self.btn_open_map.setEnabled(map_ready)
 
     # -----------------------
     # Ground helpers
@@ -815,6 +931,8 @@ class SemanticViewer(QWidget):
 
 
     def _select_wire(self, idx):
+        if self.selected_fusion_index is not None:
+            self._clear_fusion_selection()
         # restore previous selection color/size
         if self.selected_wire_index is not None and self.selected_wire_index != idx:
             self._restore_wire_color(self.selected_wire_index)
@@ -846,7 +964,7 @@ class SemanticViewer(QWidget):
         if self.selected_wire_index is not None:
             self._restore_wire_color(self.selected_wire_index)
         self.selected_wire_index = None
-        self.info_label.setText("Select a wire to see details.")
+        self.info_label.setText("Select a wire or fusion object to see details.")
         if self.clearance_actor is not None:
             self.clearance_actor.SetVisibility(0)
         self.plotter.render()
@@ -882,6 +1000,215 @@ class SemanticViewer(QWidget):
                 actor.actor.GetProperty().SetPointSize(self.WIRE_POINT_SIZE)
         except Exception:
             pass
+
+    # -----------------------
+    # Fusion overlay loading
+    # -----------------------
+    def load_fusion_overlay(self, objects_json_path, pole_distances_json_path=None):
+        self._clear_fusion()
+        self.fusion_objects = load_fusion_objects(objects_json_path)
+        self.fusion_orig_colors = [None] * len(self.fusion_objects)
+
+        for idx, item in enumerate(self.fusion_objects):
+            centroid = np.asarray(item["centroid_map_xyz"], dtype=float)
+            bbox_min = np.asarray(item["bbox_aabb_min_xyz"], dtype=float)
+            bbox_max = np.asarray(item["bbox_aabb_max_xyz"], dtype=float)
+            color = tuple(int(c) for c in item["class_color_rgb"])
+
+            diag = float(np.linalg.norm(bbox_max - bbox_min))
+            radius = min(max(diag * 0.08, 0.15), 1.0)
+            sphere = pv.Sphere(radius=radius, center=centroid)
+            actor = self.plotter.add_mesh(
+                sphere,
+                color=color,
+                opacity=0.95,
+                name=f"fusion_object_{idx}",
+            )
+            self.fusion_object_actors.append(actor)
+            col = self._get_actor_color(actor)
+            if col is None:
+                col = (color[0] / 255.0, color[1] / 255.0, color[2] / 255.0)
+            self.fusion_orig_colors[idx] = col
+
+            bbox_actor = None
+            if np.any(np.abs(bbox_max - bbox_min) > 1e-6):
+                box = pv.Box(bounds=(bbox_min[0], bbox_max[0], bbox_min[1], bbox_max[1], bbox_min[2], bbox_max[2]))
+                bbox_actor = self.plotter.add_mesh(
+                    box,
+                    color=color,
+                    opacity=0.35,
+                    style="wireframe",
+                    line_width=2,
+                    name=f"fusion_bbox_{idx}",
+                )
+            self.fusion_bbox_actors.append(bbox_actor)
+            self._create_fusion_ui(idx, item)
+
+        if pole_distances_json_path is not None and Path(pole_distances_json_path).is_file():
+            try:
+                pole_links = load_pole_neighbor_links(pole_distances_json_path, self.fusion_objects)
+            except Exception as exc:
+                print("Failed to load pole neighbor links:", exc)
+                pole_links = []
+            self._draw_pole_neighbor_links(pole_links)
+
+        self.plotter.render()
+
+    def _create_fusion_ui(self, idx, item):
+        header_btn = QPushButton(
+            f"▶ {item['object_name']} ({item['class_name']}, {float(item['confidence_score']):.2f})"
+        )
+        header_btn.setCheckable(True)
+        header_btn.setChecked(False)
+
+        controls = QWidget()
+        controls_layout = QVBoxLayout()
+        controls_layout.setContentsMargins(8, 0, 0, 0)
+        controls.setLayout(controls_layout)
+        controls.setVisible(False)
+
+        cb_object = QCheckBox("Show centroid marker")
+        cb_object.setChecked(True)
+        cb_object.toggled.connect(lambda state, i=idx: self._toggle_fusion_visible(i, state))
+        controls_layout.addWidget(cb_object)
+
+        cb_bbox = QCheckBox("Show bounding box")
+        cb_bbox.setChecked(True)
+        cb_bbox.toggled.connect(lambda state, i=idx: self._toggle_fusion_bbox_visible(i, state))
+        controls_layout.addWidget(cb_bbox)
+
+        def on_header_toggled(checked, i=idx):
+            header_btn.setText(
+                ("▼ " if checked else "▶ ")
+                + f"{item['object_name']} ({item['class_name']}, {float(item['confidence_score']):.2f})"
+            )
+            controls.setVisible(checked)
+            if checked:
+                self._select_fusion_object(i)
+            elif self.selected_fusion_index == i:
+                self._clear_fusion_selection()
+
+        header_btn.toggled.connect(on_header_toggled)
+
+        container = QWidget()
+        container_layout = QVBoxLayout()
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container.setLayout(container_layout)
+        container_layout.addWidget(header_btn)
+        container_layout.addWidget(controls)
+        self.fusion_content_layout.addWidget(container)
+        self.fusion_widgets.append(
+            {
+                "container": container,
+                "header": header_btn,
+                "controls": controls,
+                "cb_object": cb_object,
+                "cb_bbox": cb_bbox,
+                "object": item,
+            }
+        )
+
+    def _toggle_fusion_visible(self, idx, state):
+        if idx < 0 or idx >= len(self.fusion_object_actors):
+            return
+        visible = state if isinstance(state, bool) else state == Qt.Checked
+        self._set_visibility(self.fusion_object_actors[idx], visible)
+        self.plotter.render()
+
+    def _toggle_fusion_bbox_visible(self, idx, state):
+        if idx < 0 or idx >= len(self.fusion_bbox_actors):
+            return
+        visible = state if isinstance(state, bool) else state == Qt.Checked
+        actor = self.fusion_bbox_actors[idx]
+        if actor is not None:
+            self._set_visibility(actor, visible)
+            self.plotter.render()
+
+    def _select_fusion_object(self, idx):
+        if idx < 0 or idx >= len(self.fusion_objects):
+            return
+        if self.selected_wire_index is not None:
+            self._clear_selection()
+        if self.selected_fusion_index is not None and self.selected_fusion_index != idx:
+            self._restore_fusion_object(self.selected_fusion_index)
+        self._highlight_fusion_object(idx)
+        self.selected_fusion_index = idx
+        self.info_label.setText(format_fusion_info(self.fusion_objects[idx]))
+        self.plotter.render()
+
+    def _highlight_fusion_object(self, idx):
+        actor = self.fusion_object_actors[idx]
+        self._set_actor_color(actor, (1.0, 1.0, 0.0))
+        bbox_actor = self.fusion_bbox_actors[idx]
+        if bbox_actor is not None:
+            self._set_actor_color(bbox_actor, (1.0, 1.0, 0.0))
+
+    def _restore_fusion_object(self, idx):
+        actor = self.fusion_object_actors[idx]
+        orig = self.fusion_orig_colors[idx] if idx < len(self.fusion_orig_colors) else None
+        color = orig if orig is not None else self.fusion_objects[idx]["class_color_rgb"]
+        self._set_actor_color(actor, color)
+        bbox_actor = self.fusion_bbox_actors[idx]
+        if bbox_actor is not None:
+            self._set_actor_color(bbox_actor, color)
+
+    def _clear_fusion_selection(self):
+        if self.selected_fusion_index is not None:
+            self._restore_fusion_object(self.selected_fusion_index)
+        self.selected_fusion_index = None
+        self.info_label.setText("Select a wire or fusion object to see details.")
+        self.plotter.render()
+
+    def _draw_pole_neighbor_links(self, links):
+        for actor in self.pole_distance_actors:
+            try:
+                self.plotter.remove_actor(actor)
+            except Exception:
+                pass
+        self.pole_distance_actors = []
+
+        for idx, link in enumerate(links):
+            line = pv.Line(link["source_centroid"], link["target_centroid"])
+            actor = self.plotter.add_mesh(
+                line,
+                color="white",
+                line_width=2,
+                opacity=0.75,
+                name=f"pole_neighbor_{idx}",
+            )
+            self.pole_distance_actors.append(actor)
+
+    def _clear_fusion(self):
+        for actor in self.fusion_object_actors:
+            try:
+                self.plotter.remove_actor(actor)
+            except Exception:
+                pass
+        for actor in self.fusion_bbox_actors:
+            if actor is None:
+                continue
+            try:
+                self.plotter.remove_actor(actor)
+            except Exception:
+                pass
+        for actor in self.pole_distance_actors:
+            try:
+                self.plotter.remove_actor(actor)
+            except Exception:
+                pass
+
+        for i in reversed(range(self.fusion_content_layout.count())):
+            widget = self.fusion_content_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+
+        self.fusion_objects = []
+        self.fusion_object_actors = []
+        self.fusion_bbox_actors = []
+        self.fusion_orig_colors = []
+        self.fusion_widgets = []
+        self.selected_fusion_index = None
+        self.pole_distance_actors = []
 
     # -----------------------
     # Utilities
@@ -941,13 +1268,22 @@ class SemanticViewer(QWidget):
         self.selected_wire_index = None
         self.ground_clearances = []
         self.wire_sags = []
-        self.info_label.setText("Select a wire to see details.")
+        self.info_label.setText("Select a wire or fusion object to see details.")
         self.plotter.render()
 
-    def initialize_viewer(self):
+    def initialize_viewer(self, scan_ref=None):
+        self.info_label.setText("Select a wire or fusion object to see details.")
+        if scan_ref is not None:
+            self.load_scan_outputs(scan_ref)
+            return
+
+        self.current_scan_dir = None
+        self.current_scan_metadata = None
+        self.btn_open_map.setEnabled(False)
         self.load_las_file()
         # attempt to load saved wire & ground files (if they exist)
         try:
             self.load_saved_wire_files()
         except Exception as e:
             print("Failed to load saved wire/ground files:", e)
+        self._clear_fusion()

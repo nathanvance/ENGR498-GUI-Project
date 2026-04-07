@@ -7,6 +7,20 @@ preprocessing workflows from Windows:
 - FAST-LIO pose recovery
 - TF sampling on image and GPS events
 
+These workflows can still be launched manually, but the experimental GUI branch
+also drives the pose-recovery workflow from the Windows dashboard through:
+
+- `ENGR-498-Project/testDashboard.py`
+- `ENGR-498-Project/gui_pipeline.py`
+
+That GUI path then hands the pose-recovery outputs forward into:
+
+- MATLAB wire extraction
+- YOLO inference
+- fusion
+- GPS georeferencing
+- semantic viewer / map launch
+
 The repo copy is designed to be portable at the source/configuration level:
 
 - repo paths are relative
@@ -210,6 +224,9 @@ Convenience wrappers:
 - `launcher/run_calibration_workflow.py`
 - `launcher/run_transform_reading_workflow.py`
 
+The GUI uses the same launcher stack rather than duplicating Docker logic.
+That keeps the dashboard path and the CLI path on the same backend contract.
+
 
 ## Run The Calibration Workflow
 
@@ -239,6 +256,16 @@ This workflow writes the key downstream handoff file:
 ```text
 outputs/pose_recovery/<run_name>/tf_gps_out.csv
 ```
+
+When the integrated GUI launches pose recovery for a scan, the output root is
+redirected into the scan folder itself:
+
+```text
+ENGR-498-Project/assets/<scan_name>/processed/pose_recovery/
+```
+
+That per-scan output root is what the downstream GUI-launched wire extraction
+and Fusion stages consume.
 
 That CSV is the direct input expected by the Fusion georeferencing stage.
 

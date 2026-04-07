@@ -9,6 +9,7 @@ that downstream tools can analyze and visualize. The final outputs can include:
 
 - a SLAM point cloud,
 - time-aligned image exports,
+- MATLAB-generated wire extraction artifacts,
 - semantic object detections projected into 3D,
 - pole spacing metadata,
 - GPS-tagged fused object JSON,
@@ -26,6 +27,30 @@ The pipeline is intentionally split across runtime domains:
 This split is deliberate. ROS and FAST-LIO are easier to preserve in a Linux
 runtime, while Fusion, Open3D, and local YOLO inference fit naturally on the
 Windows Python side.
+
+The experimental GUI integration adds one more practical layer on top:
+
+5. Windows Qt dashboard orchestration
+
+That layer lives primarily in:
+
+- `main.py`
+- `testDashboard.py`
+- `gui_pipeline.py`
+- `scan_metadata.py`
+- `Matlab_ExtractPowerLine/testSemanticLidarViewer.py`
+
+It does not replace the backend contracts. It consumes them.
+
+In the current experimental branch, this GUI layer can actively launch:
+
+- pose recovery / SLAM
+- wire extraction
+- fusion
+- semantic viewer loading
+- Leaflet map loading
+
+It still treats FLAI as an external/manual stage.
 
 ## End-To-End Flow
 
@@ -101,6 +126,13 @@ The most important backend folders are:
 - `fusion/`
 - `project_paths.py`
 - `install_repo_python_env.ps1`
+
+The most important GUI/backend integration files are:
+
+- `testDashboard.py`
+- `gui_pipeline.py`
+- `scan_metadata.py`
+- `Matlab_ExtractPowerLine/testSemanticLidarViewer.py`
 
 The single-file reference has the full catalog:
 

@@ -8,18 +8,62 @@
     "wire_extraction": "pending",
     "fusion": "pending"
   },
-  "filepaths": {
-    "pcd": "processed/slam/cloud.pcd",
+  "wire_params": {
+    "R": 0.5,
+    "angleThr": 10,
+    "linearity": 0.98
+  },
+  "files": {
+    "rosbag": "",
     "las": "processed/slam/cloud.las",
+    "pcd": "processed/slam/cloud.pcd",
     "filtered": "processed/filtered/cloud_filtered.las",
+    "segmented": "processed/flai/segmented.las",
+    "wires_points": "processed/wires/wires_points.npz",
+    "wire_info": "processed/wires/wire_info.json",
+    "ground_points": "processed/wires/ground_points.npz",
+    "pose_recovery_root": "processed/pose_recovery",
+    "latest_pose_recovery_run": "",
+    "images_dir": "",
+    "image_timestamps_csv": "",
+    "tf_camera_csv": "",
+    "tf_gps_csv": "",
+    "yolo_output_dir": "processed/fusion/yolo_inference",
+    "masks_dir": "",
+    "meta_dir": "",
+    "fused_objects": "processed/fusion/fused_objects.json",
+    "fused_map": "processed/fusion/fused_semantic_map.ply",
+    "fused_labels": "processed/fusion/fused_semantic_labels.npz",
+    "pole_neighbor_distances": "processed/fusion/pole_neighbor_distances.json",
+    "powerline_overlay": "processed/wires/eng498_powerlines_overlay.json",
+    "gps_output_dir": "processed/fusion/gps",
+    "georeferenced_objects": "processed/fusion/gps/fused_objects_georeferenced.json",
+    "gps_alignment": "processed/fusion/gps/gps_alignment.json",
+    "tf_gps_georeferenced_csv": "processed/fusion/gps/tf_gps_georeferenced.csv",
+    "georeferenced_powerline_overlay": "processed/fusion/gps/eng498_powerlines_overlay_georeferenced.json",
     "flai": "processed/flai/segmented.las",
     "fused": "processed/fusion/fused.las",
     "wires": "processed/wires/wires.npz",
     "ground": "processed/wires/ground.npz"
   },
-  "wire_params": {
-    "R": 0.5,
-    "angleThr": 10,
-    "linearity": 0.98
-  }
+  "config": {
+    "inference": {
+      "runtime": "auto",
+      "weights": "",
+      "local_device": "0",
+      "preferred_colab_gpu": "A100"
+    },
+    "fusion": {
+      "intrinsics_json": "",
+      "extrinsics_json": "",
+      "time_column": "t_query_sec",
+      "time_offset_sec": 0.0,
+      "image_filename_column": "filename",
+      "image_time_column": ""
+    },
+    "gps": {
+      "offset_body_xyz_m": "0,0,0"
+    }
+  },
+  "notes": ""
 }

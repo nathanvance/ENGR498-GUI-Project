@@ -6,6 +6,13 @@
 
 | Goal | File to change |
 | --- | --- |
+| Change scan metadata normalization / file resolution | `scan_metadata.py` |
+| Change dashboard-to-backend orchestration | `gui_pipeline.py` |
+| Change the integrated dashboard window | `testDashboard.py` |
+| Change how the step-by-step dashboard launches stages | `views/lidar_dashboard_stepbystep.py` |
+| Change the main GUI entrypoint | `main.py` |
+| Change combined wire + Fusion semantic rendering | `Matlab_ExtractPowerLine/testSemanticLidarViewer.py` |
+| Change MATLAB wire extraction wrapper | `Matlab_ExtractPowerLine/testMatlab.py` |
 | Change Windows-to-Docker launch behavior | `rosbag_preprocessing/launcher/run_pipeline.py` |
 | Change output-root injection | `rosbag_preprocessing/docker/run_pipeline.sh` |
 | Change runtime staging behavior | `rosbag_preprocessing/scripts/sync_wsl_context.sh` |
@@ -62,6 +69,23 @@ Start in:
 - `fuse_masks_to_slam.py`
 - `georeference_from_tf_gps.py`
 
+### Change how the GUI runs the backend
+
+Start in:
+
+- `testDashboard.py`
+- `gui_pipeline.py`
+- `scan_metadata.py`
+
+This is where the current experimental branch decides:
+
+- how scan folders are structured,
+- where rosbag-preprocessing outputs are redirected,
+- how wire extraction is launched and where it writes outputs,
+- when the GUI prompts for calibration JSON files,
+- how the dashboard reacts to a Colab fallback,
+- how map launch and viewer launch resolve per-scan artifacts.
+
 ## Assumptions And Invariants
 
 - Rosbag preprocessing must produce the input images used for inference.
@@ -79,6 +103,11 @@ Start in:
   will silently drop detections.
 - Changing CSV schemas without updating downstream loaders will break later
   stages.
+- Changing scan metadata keys without updating `scan_metadata.py` will break
+  the GUI integration layer.
+- Changing viewer overlay JSON formats without updating
+  `Matlab_ExtractPowerLine/testSemanticLidarViewer.py` and
+  `semantic_overlay_loader.py` will break combined wire + Fusion viewing.
 
 ## Tuning Notes
 

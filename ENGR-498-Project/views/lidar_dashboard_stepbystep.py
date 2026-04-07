@@ -3,7 +3,6 @@ LiDAR Processing Dashboard (Step-by-Step Mode)
 Advanced control center with detailed step control, checkboxes, and parameter modification.
 """
 
-import json
 from pathlib import Path
 from datetime import datetime
 
@@ -16,6 +15,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
+
+from scan_metadata import load_scan_metadata, resolve_scan_path, save_scan_metadata
 
 
 class WireParametersDialog(QDialog):
@@ -243,7 +244,10 @@ class StepByStepDashboard(QWidget):
     """Step-by-Step Dashboard with detailed control"""
     
     # Signals
-    openViewerRequested = Signal(str)  # file_path
+    openViewerRequested = Signal(str)  # scan_path
+    openMapRequested = Signal(str)  # scan_path
+    runPipelineRequested = Signal(str)  # scan_path
+    runStepRequested = Signal(str, str)  # scan_path, step_key
     createScanRequested = Signal()
     switchToAutoModeRequested = Signal()  # Switch back to auto mode
     openFilterViewerRequested = Signal(str)  # Open the point cloud filter viewer
@@ -404,6 +408,29 @@ class StepByStepDashboard(QWidget):
         """)
         btn_new_scan.clicked.connect(self.createScanRequested.emit)
         layout.addWidget(btn_new_scan)
+
+        self.btn_run_pipeline = QPushButton("Run Full Pipeline")
+        self.btn_run_pipeline.setEnabled(False)
+        self.btn_run_pipeline.setStyleSheet("""
+            QPushButton {
+                background-color: #673AB7;
+                color: white;
+                border: none;
+                padding: 10px 18px;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #5E35B1;
+            }
+            QPushButton:disabled {
+                background-color: #D1C4E9;
+                color: white;
+            }
+        """)
+        self.btn_run_pipeline.clicked.connect(self._run_full_pipeline)
+        layout.addWidget(self.btn_run_pipeline)
         
         layout.addStretch()
         
@@ -491,19 +518,18 @@ class StepByStepDashboard(QWidget):
             self.assets_path.mkdir(parents=True, exist_ok=True)
             print(f"Created assets directory at {self.assets_path.resolve()}")
             return
+
+        self.scans_data = {}
         
         for scan_dir in self.assets_path.iterdir():
             if not scan_dir.is_dir():
                 continue
-            
-            metadata_file = scan_dir / "metadata.json"
-            if metadata_file.exists():
-                try:
-                    with open(metadata_file, 'r') as f:
-                        metadata = json.load(f)
-                        self.scans_data[scan_dir.name] = metadata
-                except Exception as e:
-                    print(f"Error loading metadata for {scan_dir.name}: {e}")
+
+            try:
+                _, metadata = load_scan_metadata(scan_dir)
+                self.scans_data[scan_dir.name] = metadata
+            except Exception as e:
+                print(f"Error loading metadata for {scan_dir.name}: {e}")
         
         self._update_table()
     
@@ -550,6 +576,25 @@ class StepByStepDashboard(QWidget):
         # Buttons layout
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(4)
+
+        btn_run = QPushButton("Run")
+        btn_run.setStyleSheet("""
+            QPushButton {
+                background-color: #673AB7;
+                color: white;
+                border: none;
+                padding: 4px 8px;
+                border-radius: 3px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #5E35B1;
+            }
+        """)
+        btn_run.clicked.connect(
+            lambda checked=False, sp=str(self.assets_path / scan_name), sk=step_key: self.runStepRequested.emit(sp, sk)
+        )
+        btn_layout.addWidget(btn_run)
         
         # View button
         btn_view = QPushButton("View")
@@ -615,8 +660,44 @@ class StepByStepDashboard(QWidget):
                 background-color: #45a049;
             }
         """)
-        btn_view.clicked.connect(lambda: print(f"View result for {scan_name}"))
+        btn_view.clicked.connect(lambda: self.openViewerRequested.emit(str(self.assets_path / scan_name)))
         layout.addWidget(btn_view)
+
+        btn_run_full = QPushButton("Run Full")
+        btn_run_full.setStyleSheet("""
+            QPushButton {
+                background-color: #673AB7;
+                color: white;
+                border: none;
+                padding: 6px 10px;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #5E35B1;
+            }
+        """)
+        btn_run_full.clicked.connect(lambda: self.runPipelineRequested.emit(str(self.assets_path / scan_name)))
+        layout.addWidget(btn_run_full)
+
+        btn_map = QPushButton("Map")
+        btn_map.setStyleSheet("""
+            QPushButton {
+                background-color: #1976D2;
+                color: white;
+                border: none;
+                padding: 6px 10px;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #125A9C;
+            }
+        """)
+        btn_map.clicked.connect(lambda: self.openMapRequested.emit(str(self.assets_path / scan_name)))
+        layout.addWidget(btn_map)
         
         # Save button (only visible if modified)
         btn_save = QPushButton("💾 Save")
@@ -694,12 +775,9 @@ class StepByStepDashboard(QWidget):
         """Save scan metadata"""
         if scan_name not in self.scans_data:
             return
-        
-        metadata_file = self.assets_path / scan_name / "metadata.json"
+
         try:
-            with open(metadata_file, 'w') as f:
-                json.dump(self.scans_data[scan_name], f, indent=2)
-            
+            save_scan_metadata(self.assets_path / scan_name, self.scans_data[scan_name])
             self.modified_scans.discard(scan_name)
             self.add_notification(f"Saved changes for {scan_name}", "done")
             self.refresh_scans()
@@ -711,6 +789,25 @@ class StepByStepDashboard(QWidget):
         """Handle view button click"""
         print(f"VIEW clicked: {scan_name} -> {step_key}")
         self.add_notification(f"View requested: {scan_name} - {step_key}", "info")
+        if step_key == "filtering":
+            scan_dir = self.assets_path / scan_name
+            metadata = self.scans_data.get(scan_name, {})
+            files_dict = metadata.get("files", {})
+            for key in ("filtered", "las", "pcd"):
+                filepath = resolve_scan_path(scan_dir, files_dict.get(key))
+                if filepath is not None and filepath.exists():
+                    self.openFilterViewerRequested.emit(str(filepath))
+                    return
+            return
+        self.openViewerRequested.emit(str(self.assets_path / scan_name))
+
+    def _run_full_pipeline(self):
+        """Run the full backend pipeline for the selected scan."""
+        if not self.selected_scan:
+            return
+        scan_path = str(self.assets_path / self.selected_scan)
+        self.runPipelineRequested.emit(scan_path)
+        self.add_notification(f"Started full pipeline for {self.selected_scan}", "running")
     
 
     #TODO I have to pass the parameters to wire extraction TODO TODO TODO TODO 
@@ -735,15 +832,16 @@ class StepByStepDashboard(QWidget):
                     self._show_save_button(scan_name)
                 
                 self.add_notification(f"Modified wire parameters for {scan_name}", "info")
-        if step_key == "filtering":
+        elif step_key == "filtering":
             print(f"MODIFY clicked: {scan_name} -> {step_key}")
             if scan_name in self.scans_data:
-                filepath = self.scans_data[scan_name]["files"]
+                files_dict = self.scans_data[scan_name].get("files", {})
+                filepath = files_dict.get("filtered") or files_dict.get("las") or files_dict.get("pcd") or ""
                 print(f"Opening filter viewer for {scan_name} with file: {filepath}")
-                # self.scans_data[scan_name]["wire_params"] = params
-                
-            #pass in filepath instead of scan name
-                self.openFilterViewerRequested.emit(filepath)
+                if filepath:
+                    resolved = resolve_scan_path(self.assets_path / scan_name, filepath)
+                    if resolved is not None:
+                        self.openFilterViewerRequested.emit(str(resolved))
             
         else:
             print(f"MODIFY clicked: {scan_name} -> {step_key}")
@@ -775,9 +873,11 @@ class StepByStepDashboard(QWidget):
         if selected_items:
             self.selected_scan = selected_items[0].data(Qt.UserRole)
             self.status_label.setText(f"Selected: {self.selected_scan}")
+            self.btn_run_pipeline.setEnabled(True)
         else:
             self.selected_scan = None
             self.status_label.setText("Ready - Step-by-Step Mode")
+            self.btn_run_pipeline.setEnabled(False)
     
     def _show_notifications(self):
         """Show notification panel"""

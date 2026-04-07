@@ -15,6 +15,10 @@ Design workflow:
   - TF sampling on image and GPS events
 - `views/`, `widgets/`, `main.py`
   Windows-side GUI and dashboard code.
+- `testDashboard.py`
+  Integrated dashboard harness that connects the current GUI to rosbag
+  preprocessing, YOLO inference, fusion, georeferencing, and the combined
+  semantic viewer.
 - `PreProcessing_GUI/`
   Windows-side LAS / point cloud preprocessing utilities.
 - `Matlab_ExtractPowerLine/`
@@ -26,6 +30,49 @@ For backend documentation, use:
   - [backend_docs/README.md](backend_docs/README.md)
 - single-file reference:
   - [BACKEND_SOFTWARE_DESCRIPTION.md](BACKEND_SOFTWARE_DESCRIPTION.md)
+
+
+## Integrated GUI Flow
+
+The current `main.py` entrypoint launches the integrated dashboard window.
+
+From the GUI, the current experimental integration supports:
+
+- scan creation by importing a rosbag into `assets/<scan_name>/raw/`
+- Docker pose recovery from the dashboard
+- MATLAB-driven wire extraction from the dashboard
+- local YOLO inference or Colab-bundle fallback preparation
+- Fusion and GPS georeferencing
+- opening the semantic viewer with:
+  - semantic LAS / point cloud background
+  - wire extraction overlays
+  - Fusion object overlays
+  - pole-to-pole distance overlays
+- opening the Leaflet map from the GUI when Fusion objects or powerline
+  overlays exist
+
+The semantic viewer is driven by:
+
+- `Matlab_ExtractPowerLine/testViewer.py`
+- `Matlab_ExtractPowerLine/testSemanticLidarViewer.py`
+
+and the dashboard orchestration layer is currently in:
+
+- `testDashboard.py`
+- `gui_pipeline.py`
+- `scan_metadata.py`
+
+The GUI currently supports two control styles:
+
+- Auto mode
+  - runs the main end-to-end backend chain for a selected scan
+- Step-by-step mode
+  - runs individual backend stages for:
+    - SLAM / pose recovery
+    - wire extraction
+    - fusion
+  - opens the filtering tool for the filtering step
+  - treats FLAI as an external/manual stage for now
 
 
 ## Host Requirements
@@ -135,6 +182,13 @@ The pose-recovery workflow produces:
 - `tf_gps_out.csv`
 - `pcd/scans.pcd`
 
+When launched from the integrated dashboard, the pose-recovery results are
+written into the selected scan folder under:
+
+```text
+assets/<scan_name>/processed/pose_recovery/
+```
+
 ### 4. Run YOLO inference
 
 Open:
@@ -158,6 +212,50 @@ Use the scripts in `fusion/` to:
 - segment instances
 - georeference objects and powerlines
 - generate Leaflet-ready outputs
+
+When launched from the integrated GUI, the backend writes into the selected
+scan folder under:
+
+```text
+assets/<scan_name>/processed/
+  pose_recovery/
+  wires/
+  fusion/
+```
+
+
+## Launch The Integrated GUI
+
+From `ENGR-498-Project/`:
+
+```powershell
+python .\main.py
+```
+
+Recommended usage:
+
+1. Create a scan from the dashboard.
+2. Select the scan.
+3. Use either:
+   - Auto mode to run the main backend chain end to end, or
+   - Step-by-step mode to run SLAM, wire extraction, or fusion individually.
+4. Open the semantic viewer from the scan row.
+5. Open the map from the scan row when Fusion objects or powerline overlays are available.
+
+Current automation boundary:
+
+- Automated from the GUI:
+  - rosbag pose recovery
+  - JPG export
+  - TF CSV export
+  - wire extraction
+  - local YOLO inference / Colab bundle preparation
+  - fusion
+  - GPS georeferencing
+  - Leaflet launch
+- Still manual or external:
+  - FLAI
+  - Colab inference execution after a fallback bundle is prepared
 
 
 ## Folder-Specific Documentation

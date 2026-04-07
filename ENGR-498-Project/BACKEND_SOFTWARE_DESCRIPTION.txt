@@ -71,6 +71,16 @@ At a high level, the backend is split into four runtime domains:
    - Accelerate per-point projection into masks.
    - Accelerate bulk GPS similarity transforms.
 
+On the experimental GUI integration branch, a fifth practical layer sits above
+those domains:
+
+5. Windows Qt dashboard orchestration
+   - Launches the backend pipeline from the GUI.
+   - Can launch pose recovery, wire extraction, and fusion as explicit GUI stages.
+   - Resolves scan metadata into concrete artifact paths.
+   - Opens the combined wire + Fusion semantic viewer.
+   - Opens the Leaflet map directly from the GUI.
+
 The pipeline is not a single monolithic script. It is a staged system with
 branch points, file contracts, and output handoffs between domains.
 
@@ -86,6 +96,10 @@ branch points, file contracts, and output handoffs between domains.
 | `requirements-repo-python-matlab.txt` | Optional MATLAB bridge dependency set. |
 | `requirements-repo-python-matlab-lock.txt` | Frozen MATLAB bridge dependency set. |
 | `project_paths.py` | Central relative-path helper for repo-root resources. |
+| `scan_metadata.py` | Normalizes per-scan metadata and resolves scan-relative vs project-relative file paths. |
+| `gui_pipeline.py` | GUI-side backend orchestration thread and Leaflet launch helper. |
+| `testDashboard.py` | Integrated dashboard harness that connects the GUI to rosbag preprocessing, wire extraction, inference, Fusion, and map launch. |
+| `main.py` | Current GUI entrypoint; launches the integrated dashboard window. |
 
 ### Backend subtrees
 
@@ -93,6 +107,7 @@ branch points, file contracts, and output handoffs between domains.
 | --- | --- |
 | `rosbag_preprocessing/` | Dockerized ROS pipeline for calibration and pose recovery from bags. |
 | `fusion/` | Semantic fusion, local/Colab inference preparation, GPS alignment, and map export. |
+| `Matlab_ExtractPowerLine/` | Current semantic viewer implementation used by the GUI for wire + Fusion overlays. |
 
 ## Architecture Decisions
 
@@ -161,6 +176,29 @@ OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 Use this style rather than hardcoded machine paths. It is the convention the
 repo follows for Windows-side scripts.
 
+### GUI integration helpers
+
+#### `scan_metadata.py`
+
+This module gives the GUI one place to:
+
+- normalize `metadata.json`,
+- create the per-scan folder structure,
+- preserve relative scan file paths,
+- resolve project-relative config paths like calibration JSON files,
+- update status and file bookkeeping after each backend stage.
+
+#### `gui_pipeline.py`
+
+This module contains the GUI-facing orchestration layer:
+
+- `BackendPipelineThread`
+  Runs pose recovery, wire extraction, YOLO inference, Fusion, powerline
+  export, and GPS georeferencing as external scripts.
+- `LeafletServerManager`
+  Serves `fusion/leaflet_viewer/` and opens the map with the correct query
+  parameters for the current scan.
+
 ### `rosbag_preprocessing/` catalog
 
 | File | Purpose |
@@ -199,6 +237,16 @@ repo follows for Windows-side scripts.
 | `native/pointcloud_accel.cpp` | C++ projection kernel for point-to-mask assignment. |
 | `native/pointcloud_accel.py` | Python wrapper for the point-cloud accelerator DLL. |
 | `native/build_accel.py` | Builds `pointcloud_accel.dll` with Visual Studio tools. |
+
+### GUI / semantic viewer catalog
+
+| File | Purpose |
+| --- | --- |
+| `main.py` | Launches the integrated dashboard window. |
+| `testDashboard.py` | Current integrated dashboard harness for scan creation, backend execution, viewer launch, and map launch. |
+| `Matlab_ExtractPowerLine/testViewer.py` | Thin launcher for the semantic viewer; now accepts an optional scan path. |
+| `Matlab_ExtractPowerLine/testSemanticLidarViewer.py` | Combined semantic viewer that can load semantic clouds, wire outputs, Fusion objects, and pole-distance overlays from scan metadata. |
+| `semantic_overlay_loader.py` | Parses `fused_objects.json` and `pole_neighbor_distances.json` for the semantic viewer. |
 | `native/geospatial_accel.cpp` | C++ similarity-transform kernel for bulk GPS transforms. |
 | `native/geospatial_accel.py` | Python wrapper for the geospatial accelerator DLL. |
 | `native/build_geospatial_accel.py` | Builds `geospatial_accel.dll` with Visual Studio tools. |

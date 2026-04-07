@@ -22,6 +22,26 @@ The script:
 10. Segments object instances such as pole_01 and transformer_01.
 11. Writes labeled outputs and opens an Open3D viewer unless disabled.
 
+On the experimental GUI integration branch, these same Fusion scripts are also
+called from:
+
+  ..\testDashboard.py
+  ..\gui_pipeline.py
+
+That GUI path consumes the per-scan outputs produced by
+`rosbag_preprocessing`, reuses per-scan wire extraction outputs when present,
+runs inference/fusion/georeferencing, and then opens:
+
+- the combined semantic viewer with wire + Fusion overlays
+- the Leaflet map when object or powerline JSON outputs are available
+
+The GUI also supports step-by-step execution for:
+- SLAM / pose recovery
+- wire extraction
+- fusion
+
+FLAI remains an external/manual stage in the current experimental branch.
+
 
 Environment
 -----------
