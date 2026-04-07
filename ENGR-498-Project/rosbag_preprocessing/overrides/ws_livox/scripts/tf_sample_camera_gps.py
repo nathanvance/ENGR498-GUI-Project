@@ -264,10 +264,11 @@ class SampleEvent:
     kind: str
     t_query_sec: float
     gps: Optional[Dict[str, float]] = None
+    image_msg: Optional[object] = None
 
 
 class ImageExportWriter:
-    def __init__(self, output_dir: Path, timestamps_csv: Path, jpeg_quality: int = 95) -> None:
+    def __init__(self, output_dir: Path, timestamps_csv: Path, jpeg_quality: int = 95, queue_size: int = 512) -> None:
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.timestamps_csv = timestamps_csv
@@ -282,8 +283,24 @@ class ImageExportWriter:
         self._next_index = 1
         self._first_stamp: Optional[float] = None
         self.saved_count = 0
+        self.dropped_count = 0
+        self._queue: Queue[Optional[Tuple[object, float]]] = Queue(maxsize=max(int(queue_size), 1))
+        self._worker = threading.Thread(target=self._worker_loop, name="image-export-writer", daemon=True)
+        self._worker.start()
 
     def close(self) -> None:
+        try:
+            self._queue.put_nowait(None)
+        except Full:
+            while True:
+                try:
+                    self._queue.get_nowait()
+                except Empty:
+                    break
+                else:
+                    self._queue.task_done()
+            self._queue.put_nowait(None)
+        self._worker.join(timeout=10.0)
         with self._lock:
             try:
                 self._file.close()
@@ -337,7 +354,7 @@ class ImageExportWriter:
             raise ValueError("Failed to encode image as JPEG.")
         return encoded.tobytes()
 
-    def save(self, msg: object, stamp_sec: float) -> str:
+    def _save(self, msg: object, stamp_sec: float) -> str:
         jpg_bytes = self._jpeg_bytes_from_message(msg)
 
         with self._lock:
@@ -356,6 +373,28 @@ class ImageExportWriter:
             self.saved_count += 1
 
         return filename
+
+    def _worker_loop(self) -> None:
+        while True:
+            item = self._queue.get()
+            try:
+                if item is None:
+                    return
+                msg, stamp_sec = item
+                self._save(msg, stamp_sec)
+            except Exception as exc:
+                rospy.logwarn(f"Failed to save image frame: {type(exc).__name__}: {exc}")
+            finally:
+                self._queue.task_done()
+
+    def enqueue_save(self, msg: object, stamp_sec: float) -> bool:
+        try:
+            self._queue.put_nowait((msg, stamp_sec))
+            return True
+        except Full:
+            with self._lock:
+                self.dropped_count += 1
+            return False
 
 
 class TimebaseState:
@@ -550,6 +589,7 @@ def main() -> int:
             output_dir=Path(args.image_output_dir),
             timestamps_csv=Path(args.image_timestamps_csv),
             jpeg_quality=args.jpeg_quality,
+            queue_size=max(args.event_queue_size, 1),
         )
 
     event_queue: Queue[SampleEvent] = Queue(maxsize=max(args.event_queue_size, 1))
@@ -567,13 +607,13 @@ def main() -> int:
         if stamp_sec is None:
             rospy.logwarn_throttle(1.0, "Image message without a valid header stamp; skipping.")
             return
-        if not enqueue_event(SampleEvent(kind="camera", t_query_sec=stamp_sec)):
-            return
-        if image_exporter is not None:
-            try:
-                image_exporter.save(msg, stamp_sec)
-            except Exception as exc:
-                rospy.logwarn_throttle(1.0, f"Failed to save image frame: {type(exc).__name__}: {exc}")
+        enqueue_event(
+            SampleEvent(
+                kind="camera",
+                t_query_sec=stamp_sec,
+                image_msg=msg if image_exporter is not None else None,
+            )
+        )
 
     def gps_cb(msg: NavSatFix) -> None:
         stamp_sec = maybe_event_stamp(msg)
@@ -662,6 +702,9 @@ def main() -> int:
                         write_camera_row(camera_writer, t_in_sec, event.t_query_sec, pose, init_status)
                         camera_f.flush()
                         counts["camera"] += 1
+                        if image_exporter is not None and event.image_msg is not None:
+                            if not image_exporter.enqueue_save(event.image_msg, event.t_query_sec):
+                                rospy.logwarn_throttle(1.0, "Image save queue is full; dropping image frame after TF sampling.")
                     else:
                         write_gps_row(gps_writer, t_in_sec, event.t_query_sec, pose, init_status, event.gps)
                         gps_f.flush()
@@ -719,6 +762,9 @@ def main() -> int:
                     write_camera_row(camera_writer, t_in_sec, event.t_query_sec, pose, status)
                     camera_f.flush()
                     counts["camera"] += 1
+                    if image_exporter is not None and event.image_msg is not None:
+                        if not image_exporter.enqueue_save(event.image_msg, event.t_query_sec):
+                            rospy.logwarn_throttle(1.0, "Image save queue is full; dropping image frame after TF sampling.")
                 else:
                     write_gps_row(gps_writer, t_in_sec, event.t_query_sec, pose, status, event.gps)
                     gps_f.flush()
@@ -735,6 +781,8 @@ def main() -> int:
     )
     if image_exporter is not None:
         message += f" Saved {image_exporter.saved_count} JPG frames to {args.image_output_dir}."
+        if image_exporter.dropped_count:
+            message += f" Dropped {image_exporter.dropped_count} image frames due to a full save queue."
     rospy.loginfo(message)
     return 0
 
