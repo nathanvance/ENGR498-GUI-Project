@@ -113,10 +113,11 @@ class DashboardTestWindow(QMainWindow):
                     "filtering": "pending",
                     "flai": "pending",
                     "wire_extraction": "pending",
+                    "inference": "pending",
                     "fusion": "pending",
                 },
                 "files": {},
-                "notes": "Add a rosbag under raw/ and configure fusion calibration JSON paths before running the backend pipeline.",
+                "notes": "Add a rosbag under raw/, then configure inference weights and fusion calibration JSON paths before running the backend pipeline.",
             }
             save_scan_metadata(scan_dir, metadata)
 
@@ -216,8 +217,11 @@ class DashboardTestWindow(QMainWindow):
         if prepared is None:
             return
         scan_dir, _ = prepared
-        self.auto_dashboard.add_notification(f"Running backend pipeline for {scan_dir.name}", "running")
-        self.step_dashboard.add_notification(f"Running backend pipeline for {scan_dir.name}", "running")
+        summary = (
+            f"Running full backend chain for {scan_dir.name}: Pose Recovery -> Wires -> Image Inference -> Fusion + GPS"
+        )
+        self.auto_dashboard.add_notification(summary, "running")
+        self.step_dashboard.add_notification(summary, "running")
         self._start_pipeline_thread(scan_dir, mode="full")
 
     def run_pipeline_step(self, scan_ref: str, step_key: str):
@@ -233,12 +237,17 @@ class DashboardTestWindow(QMainWindow):
             self._start_pipeline_thread(scan_dir, mode="wire-extraction")
             return
 
+        if step_key == "inference":
+            self.step_dashboard.add_notification(f"Running image inference for {scan_dir.name}", "running")
+            self._start_pipeline_thread(scan_dir, mode="inference")
+            return
+
         if step_key == "fusion":
             prepared = self.ensure_pipeline_configuration(scan_dir)
             if prepared is None:
                 return
             scan_dir, metadata = prepared
-            self.step_dashboard.add_notification(f"Running fusion for {scan_dir.name}", "running")
+            self.step_dashboard.add_notification(f"Running fusion and GPS georeferencing for {scan_dir.name}", "running")
             self._start_pipeline_thread(scan_dir, mode="fusion")
             return
 
@@ -272,7 +281,15 @@ class DashboardTestWindow(QMainWindow):
             print(line)
 
     def _on_pipeline_stage(self, step_key: str, status: str):
-        message = f"{step_key}: {status}"
+        stage_names = {
+            "slam": "Pose Recovery",
+            "filtering": "Filtering",
+            "flai": "FLAI",
+            "wire_extraction": "Wire Extraction",
+            "inference": "Image Inference",
+            "fusion": "Fusion",
+        }
+        message = f"{stage_names.get(step_key, step_key)}: {status}"
         self.auto_dashboard.status_label.setText(message)
         self.step_dashboard.status_label.setText(message)
         self.auto_dashboard.add_notification(message, "running" if status == "running" else "done")

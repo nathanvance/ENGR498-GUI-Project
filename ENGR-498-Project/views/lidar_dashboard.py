@@ -178,13 +178,22 @@ class DashboardView(QWidget):
     createScanRequested = Signal()
     switchToStepModeRequested = Signal()  # NEW: Switch to step-by-step mode
     
-    # Reordered: Wires before Fusion, removed LAS
     STEP_COLUMNS = {
-        "SLAM": "slam",
+        "Pose Recovery": "slam",
         "Filtering": "filtering",
         "FLAI": "flai",
         "Wires": "wire_extraction",
-        "Fusion": "fusion"
+        "Image Inference": "inference",
+        "Fusion + GPS": "fusion"
+    }
+
+    STEP_TOOLTIPS = {
+        "slam": "Runs rosbag preprocessing: FAST-LIO SLAM, JPG export from /image/compressed, and camera/GPS TF sampling.",
+        "filtering": "Optional manual point-cloud cleanup stage.",
+        "flai": "External/manual segmentation stage if used.",
+        "wire_extraction": "MATLAB wire extraction outputs for wires_points.npz, wire_info.json, and ground points.",
+        "inference": "YOLO segmentation on the JPG images exported during Pose Recovery.",
+        "fusion": "Mask projection, dense-cluster cleanup, instance clustering, pole spacing, and optional GPS georeferencing.",
     }
     
     def __init__(self, assets_path="assets", parent=None):
@@ -217,31 +226,40 @@ class DashboardView(QWidget):
         main_layout.addWidget(self.table, stretch=1)
         
         # Status bar
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel("Auto Mode runs Pose Recovery, Wires, Image Inference, and Fusion + GPS as one backend chain.")
         self.status_label.setStyleSheet("color: #666; padding: 8px;")
         main_layout.addWidget(self.status_label)
         
         # Apply global styles
         self.setStyleSheet("""
             QWidget {
-                background-color: #fafafa;
+                background-color: #f6f7fb;
+                color: #1f2937;
                 font-family: 'Segoe UI', Arial, sans-serif;
+            }
+            QLabel {
+                color: #1f2937;
+                background: transparent;
             }
             QTableWidget {
                 background-color: white;
+                color: #1f2937;
                 border: 1px solid #ddd;
                 border-radius: 8px;
                 gridline-color: #e0e0e0;
+                alternate-background-color: #f9fbff;
             }
             QTableWidget::item {
                 padding: 8px;
+                color: #1f2937;
             }
             QTableWidget::item:selected {
-                background-color: #e3f2fd;
-                color: black;
+                background-color: #dbeafe;
+                color: #111827;
             }
             QHeaderView::section {
                 background-color: #f5f5f5;
+                color: #111827;
                 padding: 10px;
                 border: none;
                 border-bottom: 2px solid #2196F3;
@@ -355,6 +373,7 @@ class DashboardView(QWidget):
                 background-color: #bbb;
             }
         """)
+        self.btn_run_pipeline.setToolTip("Run the automated backend chain for the selected scan: Pose Recovery -> Wires -> Image Inference -> Fusion + GPS.")
         self.btn_run_pipeline.clicked.connect(self._run_full_pipeline)
         layout.addWidget(self.btn_run_pipeline)
         
@@ -408,6 +427,19 @@ class DashboardView(QWidget):
         columns = ["Scan Name"] + list(self.STEP_COLUMNS.keys()) + ["Status", "Actions"]
         table.setColumnCount(len(columns))
         table.setHorizontalHeaderLabels(columns)
+
+        for idx, header_text in enumerate(columns):
+            item = table.horizontalHeaderItem(idx)
+            if item is None:
+                continue
+            if header_text in self.STEP_COLUMNS:
+                item.setToolTip(self.STEP_TOOLTIPS[self.STEP_COLUMNS[header_text]])
+            elif header_text == "Status":
+                item.setToolTip("Overall scan state derived from the stage statuses shown in this row.")
+            elif header_text == "Actions":
+                item.setToolTip("Open the semantic viewer, open the map, or delete the scan.")
+            else:
+                item.setToolTip("The scan directory under assets/ containing raw bags, processed outputs, and metadata.")
         
         # Configure table properties
         table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -424,7 +456,7 @@ class DashboardView(QWidget):
         header.setSectionResizeMode(0, QHeaderView.Stretch)  # Scan Name
         for i in range(1, len(columns) - 2):  # Step columns
             header.setSectionResizeMode(i, QHeaderView.Fixed)
-            table.setColumnWidth(i, 120)
+            table.setColumnWidth(i, 135)
         header.setSectionResizeMode(len(columns) - 2, QHeaderView.Fixed)  # Status
         table.setColumnWidth(len(columns) - 2, 150)
         header.setSectionResizeMode(len(columns) - 1, QHeaderView.Fixed)  # Actions
@@ -480,6 +512,7 @@ class DashboardView(QWidget):
                 
                 # Status indicator
                 indicator = StatusIndicator(step_status)
+                indicator.setToolTip(self.STEP_TOOLTIPS[step_key])
                 self.table.setCellWidget(row, col_idx, indicator)
             
             # Overall Status column
@@ -494,10 +527,11 @@ class DashboardView(QWidget):
     def _get_overall_status(self, metadata):
         """Determine overall scan status"""
         status_dict = metadata.get("status", {})
+        required_steps = ("slam", "wire_extraction", "inference", "fusion")
         
         if any(s == "running" for s in status_dict.values()):
             return "processing"
-        elif all(s == "done" for s in status_dict.values()):
+        elif all(status_dict.get(step) == "done" for step in required_steps):
             return "complete"
         elif any(s == "error" for s in status_dict.values()):
             return "error"
@@ -602,6 +636,7 @@ class DashboardView(QWidget):
             "slam": "pcd",
             "filtering": "filtered",
             "flai": "segmented",
+            "inference": "masks_dir",
             "fusion": "fused",
             "wire_extraction": "wires"
         }
@@ -617,14 +652,17 @@ class DashboardView(QWidget):
         else:
             self.selected_scan = None
             self.btn_run_pipeline.setEnabled(False)
-            self.status_label.setText("Ready")
+            self.status_label.setText("Auto Mode runs Pose Recovery, Wires, Image Inference, and Fusion + GPS as one backend chain.")
     
     def _run_full_pipeline(self):
         """Run full pipeline for selected scan"""
         if self.selected_scan:
             scan_path = str(self.assets_path / self.selected_scan)
             self.runPipelineRequested.emit(scan_path)
-            self.add_notification(f"Started pipeline for {self.selected_scan}", "running")
+            self.add_notification(
+                f"Started backend chain for {self.selected_scan}: Pose Recovery -> Wires -> Image Inference -> Fusion + GPS",
+                "running",
+            )
     
     def _delete_scan(self, scan_name):
         """Delete a scan after confirmation"""

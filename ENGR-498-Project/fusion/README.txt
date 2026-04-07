@@ -36,9 +36,10 @@ runs inference/fusion/georeferencing, and then opens:
 - the Leaflet map when object or powerline JSON outputs are available
 
 The GUI also supports step-by-step execution for:
-- SLAM / pose recovery
+- Pose Recovery
 - wire extraction
-- fusion
+- image inference
+- fusion + GPS
 
 FLAI remains an external/manual stage in the current experimental branch.
 

@@ -305,10 +305,9 @@ class BackendPipelineThread(QThread):
         self._maybe_georeference(scan_dir, metadata, tf_gps_path=tf_gps_path, powerline_overlay=powerline_overlay)
         return output_dir
 
-    def _run_yolo_and_fusion(self, scan_dir: Path, metadata: dict, pose_run: Path) -> None:
+    def _run_yolo_inference(self, scan_dir: Path, metadata: dict, pose_run: Path) -> tuple[Path, Path, Path]:
         config = metadata.get("config", {})
         inference_cfg = config.get("inference", {})
-        fusion_cfg = config.get("fusion", {})
 
         yolo_output_dir = scan_dir / "processed" / "fusion" / "yolo_inference"
         yolo_output_dir.mkdir(parents=True, exist_ok=True)
@@ -335,6 +334,7 @@ class BackendPipelineThread(QThread):
 
         masks_dir = yolo_output_dir / "masks_npz"
         meta_dir = yolo_output_dir / "meta_json"
+        pred_images_dir = yolo_output_dir / "pred_images"
         if not masks_dir.is_dir() or not meta_dir.is_dir():
             bundle_dir = yolo_output_dir / "colab_bundle"
             update_file_entry(metadata, scan_dir, "yolo_output_dir", yolo_output_dir)
@@ -347,7 +347,23 @@ class BackendPipelineThread(QThread):
         update_file_entry(metadata, scan_dir, "yolo_output_dir", yolo_output_dir)
         update_file_entry(metadata, scan_dir, "masks_dir", masks_dir)
         update_file_entry(metadata, scan_dir, "meta_dir", meta_dir)
+        if pred_images_dir.is_dir():
+            update_file_entry(metadata, scan_dir, "pred_images_dir", pred_images_dir)
+        update_status(metadata, "inference", "done")
         save_scan_metadata(scan_dir, metadata)
+        return yolo_output_dir, masks_dir, meta_dir
+
+    def _run_yolo_and_fusion(self, scan_dir: Path, metadata: dict, pose_run: Path) -> None:
+        config = metadata.get("config", {})
+        fusion_cfg = config.get("fusion", {})
+
+        masks_dir = resolve_scan_path(scan_dir, metadata.get("files", {}).get("masks_dir"))
+        meta_dir = resolve_scan_path(scan_dir, metadata.get("files", {}).get("meta_dir"))
+        if masks_dir is None or not masks_dir.is_dir() or meta_dir is None or not meta_dir.is_dir():
+            _, masks_dir, meta_dir = self._run_yolo_inference(scan_dir, metadata, pose_run)
+        else:
+            update_status(metadata, "inference", "done")
+            save_scan_metadata(scan_dir, metadata)
 
         intrinsics_path = resolve_scan_path(scan_dir, fusion_cfg.get("intrinsics_json"))
         extrinsics_path = resolve_scan_path(scan_dir, fusion_cfg.get("extrinsics_json"))
@@ -412,16 +428,18 @@ class BackendPipelineThread(QThread):
         save_scan_metadata(scan_dir, metadata)
 
     def run(self) -> None:
+        active_stage = "fusion"
         try:
             scan_dir, metadata = load_scan_metadata(self.scan_ref)
             save_scan_metadata(scan_dir, metadata)
             pose_run: Path | None = None
 
             if self.mode in {"full", "pose-recovery"}:
+                active_stage = "slam"
                 self.stageChanged.emit("slam", "running")
                 pose_run = self._run_pose_recovery(scan_dir, metadata)
                 self.stageChanged.emit("slam", "done")
-            elif self.mode == "fusion":
+            elif self.mode in {"fusion", "inference"}:
                 pose_run = resolve_scan_path(scan_dir, metadata["files"].get("latest_pose_recovery_run"))
                 if pose_run is None or not pose_run.is_dir():
                     pose_root = resolve_scan_path(scan_dir, metadata["files"].get("pose_recovery_root"))
@@ -430,11 +448,21 @@ class BackendPipelineThread(QThread):
                     raise FileNotFoundError("No pose recovery output was found for this scan.")
 
             if self.mode in {"full", "wire-extraction"}:
+                active_stage = "wire_extraction"
                 self.stageChanged.emit("wire_extraction", "running")
                 self._run_wire_extraction(scan_dir, metadata)
                 self.stageChanged.emit("wire_extraction", "done")
 
+            if self.mode in {"full", "inference"}:
+                active_stage = "inference"
+                self.stageChanged.emit("inference", "running")
+                if pose_run is None:
+                    raise FileNotFoundError("Image inference requires a pose recovery output run for this scan.")
+                self._run_yolo_inference(scan_dir, metadata, pose_run)
+                self.stageChanged.emit("inference", "done")
+
             if self.mode in {"full", "fusion"}:
+                active_stage = "fusion"
                 self.stageChanged.emit("fusion", "running")
                 if pose_run is None:
                     raise FileNotFoundError("Fusion requires a pose recovery output run for this scan.")
@@ -443,7 +471,7 @@ class BackendPipelineThread(QThread):
 
             self.completed.emit(str(scan_dir))
         except ColabFallbackRequiredError as exc:
-            self.stageChanged.emit("fusion", "pending")
+            self.stageChanged.emit(active_stage, "pending")
             self.failed.emit(str(exc))
         except Exception as exc:  # pragma: no cover - GUI-facing error path
             self.failed.emit(str(exc))

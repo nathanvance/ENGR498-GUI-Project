@@ -11,12 +11,12 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox,
     QFrame, QScrollArea, QFileDialog, QMessageBox,
     QToolButton, QDialog, QDoubleSpinBox, QSpinBox, QFormLayout,
-    QDialogButtonBox, QTextEdit
+    QDialogButtonBox, QTextEdit, QLineEdit, QComboBox
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
 
-from scan_metadata import load_scan_metadata, resolve_scan_path, save_scan_metadata
+from scan_metadata import load_scan_metadata, relativize_for_scan, resolve_scan_path, save_scan_metadata
 
 
 class WireParametersDialog(QDialog):
@@ -138,6 +138,224 @@ class WireParametersDialog(QDialog):
         }
 
 
+class StepInfoDialog(QDialog):
+    """Read-only explanation dialog for a pipeline stage."""
+
+    def __init__(self, title: str, body_markdown: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(700, 420)
+
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #1f3a5f; margin-bottom: 8px;")
+        layout.addWidget(title_label)
+
+        body = QTextEdit()
+        body.setReadOnly(True)
+        body.setMarkdown(body_markdown)
+        body.setStyleSheet(
+            "QTextEdit { background-color: #ffffff; color: #1f2937; border: 1px solid #d0d7de; "
+            "border-radius: 6px; padding: 8px; }"
+        )
+        layout.addWidget(body, stretch=1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+
+class InferenceParametersDialog(QDialog):
+    """Configure local/Colab inference settings."""
+
+    def __init__(self, current_config=None, scan_dir: Path | None = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Image Inference Configuration")
+        self.setMinimumWidth(620)
+        self.scan_dir = scan_dir
+        current_config = current_config or {}
+        self._setup_ui(current_config)
+
+    def _browse_weights(self):
+        chosen, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select YOLO weights",
+            str(self.scan_dir) if self.scan_dir is not None else "",
+            "PyTorch Weights (*.pt);;All Files (*)",
+        )
+        if chosen:
+            self.weights_edit.setText(chosen)
+
+    def _setup_ui(self, current_config):
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        title = QLabel("Configure Image Inference")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #1f3a5f; margin-bottom: 10px;")
+        layout.addWidget(title)
+
+        help_text = QLabel(
+            "This stage runs YOLO segmentation on the JPGs exported during pose recovery. "
+            "It writes masks_npz/, meta_json/, pred_images/, and prepares a Colab bundle when local inference is not available."
+        )
+        help_text.setWordWrap(True)
+        help_text.setStyleSheet("color: #4b5563; background-color: #eef4ff; padding: 8px; border-radius: 4px;")
+        layout.addWidget(help_text)
+
+        form = QFormLayout()
+        self.runtime_combo = QComboBox()
+        self.runtime_combo.addItems(["auto", "local", "colab"])
+        self.runtime_combo.setCurrentText(str(current_config.get("runtime", "auto")))
+        form.addRow("Runtime:", self.runtime_combo)
+
+        self.local_device_edit = QLineEdit(str(current_config.get("local_device", "0")))
+        form.addRow("Local CUDA Device:", self.local_device_edit)
+
+        self.preferred_gpu_edit = QLineEdit(str(current_config.get("preferred_colab_gpu", "A100")))
+        form.addRow("Preferred Colab GPU:", self.preferred_gpu_edit)
+
+        weights_row = QWidget()
+        weights_layout = QHBoxLayout()
+        weights_layout.setContentsMargins(0, 0, 0, 0)
+        weights_row.setLayout(weights_layout)
+        self.weights_edit = QLineEdit(str(current_config.get("weights", "")))
+        weights_layout.addWidget(self.weights_edit, stretch=1)
+        browse_btn = QPushButton("Browse")
+        browse_btn.clicked.connect(self._browse_weights)
+        weights_layout.addWidget(browse_btn)
+        form.addRow("Weights (.pt):", weights_row)
+
+        layout.addLayout(form)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def get_config(self):
+        weights_value = self.weights_edit.text().strip()
+        if weights_value and self.scan_dir is not None:
+            weights_value = relativize_for_scan(self.scan_dir, weights_value)
+        return {
+            "runtime": self.runtime_combo.currentText().strip() or "auto",
+            "local_device": self.local_device_edit.text().strip() or "0",
+            "preferred_colab_gpu": self.preferred_gpu_edit.text().strip() or "A100",
+            "weights": weights_value,
+        }
+
+
+class FusionParametersDialog(QDialog):
+    """Configure Fusion and georeferencing settings."""
+
+    def __init__(self, fusion_config=None, gps_config=None, scan_dir: Path | None = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Fusion and GPS Configuration")
+        self.setMinimumWidth(680)
+        self.scan_dir = scan_dir
+        self._setup_ui(fusion_config or {}, gps_config or {})
+
+    def _browse_json(self, target_edit: QLineEdit, title: str):
+        chosen, _ = QFileDialog.getOpenFileName(
+            self,
+            title,
+            str(self.scan_dir) if self.scan_dir is not None else "",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if chosen:
+            target_edit.setText(chosen)
+
+    def _setup_ui(self, fusion_config, gps_config):
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        title = QLabel("Configure Fusion and GPS Mapping")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #1f3a5f; margin-bottom: 10px;")
+        layout.addWidget(title)
+
+        help_text = QLabel(
+            "Fusion projects YOLO masks into the SLAM point cloud, keeps dense clusters, segments instances, "
+            "measures pole spacing, and georeferences the results when tf_gps_out.csv is available."
+        )
+        help_text.setWordWrap(True)
+        help_text.setStyleSheet("color: #4b5563; background-color: #eef8ef; padding: 8px; border-radius: 4px;")
+        layout.addWidget(help_text)
+
+        form = QFormLayout()
+
+        intrinsics_row = QWidget()
+        intrinsics_layout = QHBoxLayout()
+        intrinsics_layout.setContentsMargins(0, 0, 0, 0)
+        intrinsics_row.setLayout(intrinsics_layout)
+        self.intrinsics_edit = QLineEdit(str(fusion_config.get("intrinsics_json", "")))
+        intrinsics_layout.addWidget(self.intrinsics_edit, stretch=1)
+        intrinsics_browse = QPushButton("Browse")
+        intrinsics_browse.clicked.connect(lambda: self._browse_json(self.intrinsics_edit, "Select intrinsics JSON"))
+        intrinsics_layout.addWidget(intrinsics_browse)
+        form.addRow("Intrinsics JSON:", intrinsics_row)
+
+        extrinsics_row = QWidget()
+        extrinsics_layout = QHBoxLayout()
+        extrinsics_layout.setContentsMargins(0, 0, 0, 0)
+        extrinsics_row.setLayout(extrinsics_layout)
+        self.extrinsics_edit = QLineEdit(str(fusion_config.get("extrinsics_json", "")))
+        extrinsics_layout.addWidget(self.extrinsics_edit, stretch=1)
+        extrinsics_browse = QPushButton("Browse")
+        extrinsics_browse.clicked.connect(lambda: self._browse_json(self.extrinsics_edit, "Select extrinsics JSON"))
+        extrinsics_layout.addWidget(extrinsics_browse)
+        form.addRow("Extrinsics JSON:", extrinsics_row)
+
+        self.time_column_edit = QLineEdit(str(fusion_config.get("time_column", "t_query_sec")))
+        form.addRow("Pose Time Column:", self.time_column_edit)
+
+        self.image_filename_column_edit = QLineEdit(str(fusion_config.get("image_filename_column", "filename")))
+        form.addRow("Image Filename Column:", self.image_filename_column_edit)
+
+        self.image_time_column_edit = QLineEdit(str(fusion_config.get("image_time_column", "")))
+        form.addRow("Image Time Column:", self.image_time_column_edit)
+
+        self.time_offset_spin = QDoubleSpinBox()
+        self.time_offset_spin.setRange(-60.0, 60.0)
+        self.time_offset_spin.setDecimals(4)
+        self.time_offset_spin.setSingleStep(0.01)
+        self.time_offset_spin.setValue(float(fusion_config.get("time_offset_sec", 0.0)))
+        self.time_offset_spin.setSuffix(" s")
+        form.addRow("Time Offset:", self.time_offset_spin)
+
+        self.gps_offset_edit = QLineEdit(str(gps_config.get("offset_body_xyz_m", "0,0,0")))
+        form.addRow("GPS->LiDAR Offset (x,y,z m):", self.gps_offset_edit)
+
+        layout.addLayout(form)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def get_configs(self):
+        intrinsics_value = self.intrinsics_edit.text().strip()
+        extrinsics_value = self.extrinsics_edit.text().strip()
+        if intrinsics_value and self.scan_dir is not None:
+            intrinsics_value = relativize_for_scan(self.scan_dir, intrinsics_value)
+        if extrinsics_value and self.scan_dir is not None:
+            extrinsics_value = relativize_for_scan(self.scan_dir, extrinsics_value)
+
+        fusion_config = {
+            "intrinsics_json": intrinsics_value,
+            "extrinsics_json": extrinsics_value,
+            "time_column": self.time_column_edit.text().strip() or "t_query_sec",
+            "time_offset_sec": self.time_offset_spin.value(),
+            "image_filename_column": self.image_filename_column_edit.text().strip() or "filename",
+            "image_time_column": self.image_time_column_edit.text().strip(),
+        }
+        gps_config = {
+            "offset_body_xyz_m": self.gps_offset_edit.text().strip() or "0,0,0",
+        }
+        return fusion_config, gps_config
+
+
 class NotificationPanel(QWidget):
     """Dropdown notification panel"""
     
@@ -252,13 +470,64 @@ class StepByStepDashboard(QWidget):
     switchToAutoModeRequested = Signal()  # Switch back to auto mode
     openFilterViewerRequested = Signal(str)  # Open the point cloud filter viewer
     
-    # Reordered: Wires before Fusion, removed LAS
     STEP_COLUMNS = {
-        "SLAM": "slam",
+        "Pose Recovery": "slam",
         "Filtering": "filtering",
         "FLAI": "flai",
         "Wires": "wire_extraction",
-        "Fusion": "fusion"
+        "Image Inference": "inference",
+        "Fusion + GPS": "fusion",
+    }
+
+    STEP_DETAILS = {
+        "slam": {
+            "title": "Pose Recovery",
+            "summary": "Replays the rosbag in Docker, runs FAST-LIO SLAM, writes scans.pcd, exports JPG frames from /image/compressed, and samples tf_camera_out.csv plus tf_gps_out.csv.",
+            "run_tooltip": "Run the full rosbag preprocessing stage: FAST-LIO SLAM + JPG export + camera/GPS TF sampling.",
+            "view_tooltip": "Open the semantic viewer for this scan using the latest outputs generated so far.",
+            "modify_label": "Details",
+            "modify_tooltip": "Show exactly what Pose Recovery does and which files it produces.",
+        },
+        "filtering": {
+            "title": "Filtering",
+            "summary": "Optional point-cloud cleanup and LAS inspection stage. This does not run automatically in the experimental backend.",
+            "run_tooltip": "Filtering is currently manual. Use the filter viewer when a LAS or point cloud file is available.",
+            "view_tooltip": "Open the point cloud filter viewer for the best available filtered/raw point cloud.",
+            "modify_label": "Open",
+            "modify_tooltip": "Open the filter viewer so you can inspect or adjust point-cloud filtering manually.",
+        },
+        "flai": {
+            "title": "FLAI",
+            "summary": "External/manual segmentation stage. If you use FLAI, import its segmented LAS output into the scan folder before opening the semantic viewer.",
+            "run_tooltip": "FLAI is not automated in this experimental branch.",
+            "view_tooltip": "Open the semantic viewer to inspect any current scan results.",
+            "modify_label": "Guide",
+            "modify_tooltip": "Show guidance for how FLAI fits into the current backend and where its outputs belong.",
+        },
+        "wire_extraction": {
+            "title": "Wires",
+            "summary": "Runs MATLAB-based wire extraction on a LAS/point cloud, producing wires_points.npz, wire_info.json, ground_points.npz, and a Leaflet-ready overlay export.",
+            "run_tooltip": "Run the ENGR498 wire extraction stage for this scan.",
+            "view_tooltip": "Open the semantic viewer, which overlays wire extraction outputs with fusion objects.",
+            "modify_label": "Params",
+            "modify_tooltip": "Adjust the wire extraction parameters stored in scan metadata.",
+        },
+        "inference": {
+            "title": "Image Inference",
+            "summary": "Runs YOLO segmentation on the JPG images exported during Pose Recovery and produces masks_npz/, meta_json/, pred_images/, and optionally a Colab bundle.",
+            "run_tooltip": "Run YOLO inference using the pose-recovery JPG frames for this scan.",
+            "view_tooltip": "Open the semantic viewer for the scan. Inference artifacts are consumed by Fusion rather than viewed directly here.",
+            "modify_label": "Config",
+            "modify_tooltip": "Configure inference runtime, weights, local CUDA device, and Colab preference.",
+        },
+        "fusion": {
+            "title": "Fusion + GPS",
+            "summary": "Projects segmentation masks into the SLAM point cloud, applies dense-cluster cleanup and instance clustering, measures pole spacing, and georeferences the outputs when tf_gps_out.csv exists.",
+            "run_tooltip": "Run camera-LiDAR fusion and the GPS georeferencing/export stage for this scan.",
+            "view_tooltip": "Open the semantic viewer with fused objects and wire overlays.",
+            "modify_label": "Config",
+            "modify_tooltip": "Configure calibration JSONs, time alignment, and GPS offset settings used by Fusion.",
+        },
     }
     
     def __init__(self, assets_path="ENGR-498-Project/assets", parent=None):
@@ -286,37 +555,54 @@ class StepByStepDashboard(QWidget):
         # Controls bar
         controls_bar = self._create_controls_bar()
         main_layout.addWidget(controls_bar)
+
+        # Pipeline overview
+        overview = self._create_pipeline_overview()
+        main_layout.addWidget(overview)
         
         # Scan table
         self.table = self._create_scan_table()
         main_layout.addWidget(self.table, stretch=1)
         
         # Status bar
-        self.status_label = QLabel("Ready - Step-by-Step Mode allows detailed control over each processing step")
+        self.status_label = QLabel("Step-by-Step Mode: Pose Recovery -> Wires -> Image Inference -> Fusion + GPS, with manual Filtering and FLAI hooks.")
         self.status_label.setStyleSheet("color: #666; padding: 8px;")
         main_layout.addWidget(self.status_label)
         
         # Apply global styles
         self.setStyleSheet("""
             QWidget {
-                background-color: #fafafa;
+                background-color: #f6f7fb;
+                color: #1f2937;
                 font-family: 'Segoe UI', Arial, sans-serif;
+            }
+            QLabel {
+                color: #1f2937;
+                background: transparent;
+            }
+            QCheckBox {
+                color: #1f2937;
+                spacing: 6px;
             }
             QTableWidget {
                 background-color: white;
+                color: #1f2937;
                 border: 1px solid #ddd;
                 border-radius: 8px;
                 gridline-color: #e0e0e0;
+                alternate-background-color: #f9fbff;
             }
             QTableWidget::item {
                 padding: 8px;
+                color: #1f2937;
             }
             QTableWidget::item:selected {
-                background-color: #e3f2fd;
-                color: black;
+                background-color: #dbeafe;
+                color: #111827;
             }
             QHeaderView::section {
                 background-color: #f5f5f5;
+                color: #111827;
                 padding: 10px;
                 border: none;
                 border-bottom: 2px solid #673AB7;
@@ -429,6 +715,7 @@ class StepByStepDashboard(QWidget):
                 color: white;
             }
         """)
+        self.btn_run_pipeline.setToolTip("Run the automated backend chain for the selected scan: Pose Recovery -> Wires -> Image Inference -> Fusion + GPS.")
         self.btn_run_pipeline.clicked.connect(self._run_full_pipeline)
         layout.addWidget(self.btn_run_pipeline)
         
@@ -469,11 +756,46 @@ class StepByStepDashboard(QWidget):
                 background-color: #e0e0e0;
             }
         """)
-        print("refresh button clicked");
         btn_refresh.clicked.connect(self.refresh_scans)
         layout.addWidget(btn_refresh)
         
         return bar
+
+    def _create_pipeline_overview(self):
+        """Create a short in-context explanation of what each backend stage does."""
+        panel = QFrame()
+        panel.setStyleSheet(
+            "QFrame { background-color: #ffffff; border: 1px solid #d8dee9; border-radius: 8px; padding: 10px; }"
+        )
+        layout = QVBoxLayout()
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
+        panel.setLayout(layout)
+
+        title = QLabel("Backend Stage Summary")
+        title.setStyleSheet("font-size: 15px; font-weight: bold; color: #1f3a5f;")
+        layout.addWidget(title)
+
+        summary = QLabel(
+            "<b>Pose Recovery</b> replays the rosbag, runs FAST-LIO SLAM, writes <code>scans.pcd</code>, "
+            "exports JPGs from <code>/image/compressed</code>, and samples both <code>tf_camera_out.csv</code> "
+            "and <code>tf_gps_out.csv</code>. <b>Image Inference</b> runs YOLO on those JPGs and writes "
+            "<code>masks_npz/</code> plus <code>meta_json/</code>. <b>Fusion + GPS</b> projects the masks into "
+            "the SLAM cloud, keeps dense clusters, segments utility assets, measures pole spacing, and georeferences "
+            "the results when GPS data is available. <b>Wires</b> remains the MATLAB wire extraction path."
+        )
+        summary.setWordWrap(True)
+        summary.setStyleSheet("color: #374151; line-height: 1.35;")
+        layout.addWidget(summary)
+
+        legend = QLabel(
+            "Use <b>Run</b> to execute a stage, <b>View</b> to inspect the current result layer, and the right-most "
+            "button to open that stage's actual details, guide, parameters, or configuration."
+        )
+        legend.setWordWrap(True)
+        legend.setStyleSheet("color: #4b5563;")
+        layout.addWidget(legend)
+        return panel
     
     def _create_scan_table(self):
         """Create the scan table with checkboxes"""
@@ -482,6 +804,18 @@ class StepByStepDashboard(QWidget):
         columns = ["Scan Name"] + list(self.STEP_COLUMNS.keys()) + ["Actions"]
         table.setColumnCount(len(columns))
         table.setHorizontalHeaderLabels(columns)
+
+        for idx, header_text in enumerate(columns):
+            item = table.horizontalHeaderItem(idx)
+            if item is None:
+                continue
+            if header_text in self.STEP_COLUMNS:
+                step_key = self.STEP_COLUMNS[header_text]
+                item.setToolTip(self.STEP_DETAILS[step_key]["summary"])
+            elif header_text == "Actions":
+                item.setToolTip("Open the combined semantic viewer, run the full backend chain, open the Leaflet map, or delete the scan.")
+            else:
+                item.setToolTip("The scan directory under assets/ containing raw bags, processed outputs, and metadata.")
         
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setSelectionMode(QTableWidget.SingleSelection)
@@ -497,9 +831,9 @@ class StepByStepDashboard(QWidget):
         header.setSectionResizeMode(0, QHeaderView.Stretch)  # Scan Name
         for i in range(1, len(columns) - 1):  # Step columns
             header.setSectionResizeMode(i, QHeaderView.Fixed)
-            table.setColumnWidth(i, 180)
+            table.setColumnWidth(i, 205)
         header.setSectionResizeMode(len(columns) - 1, QHeaderView.Fixed)  # Actions
-        table.setColumnWidth(len(columns) - 1, 280)
+        table.setColumnWidth(len(columns) - 1, 300)
         
         table.setMinimumHeight(300)
         table.itemSelectionChanged.connect(self._on_selection_changed)
@@ -561,18 +895,21 @@ class StepByStepDashboard(QWidget):
     
     def _create_step_widget(self, scan_name, step_key, status_dict, files_dict):
         """Create widget for each step with checkbox and buttons"""
+        step_info = self.STEP_DETAILS[step_key]
         widget = QWidget()
         layout = QVBoxLayout()
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
         widget.setLayout(layout)
-        
+        widget.setToolTip(step_info["summary"])
+
         # Checkbox for completion
         checkbox = QCheckBox("Complete")
         checkbox.setChecked(status_dict.get(step_key) == "done")
+        checkbox.setToolTip(f"Mark {step_info['title']} complete in metadata. This does not run the stage by itself.")
         checkbox.stateChanged.connect(lambda state, sn=scan_name, sk=step_key: self._on_checkbox_changed(sn, sk, state))
         layout.addWidget(checkbox)
-        
+
         # Buttons layout
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(4)
@@ -591,6 +928,7 @@ class StepByStepDashboard(QWidget):
                 background-color: #5E35B1;
             }
         """)
+        btn_run.setToolTip(step_info["run_tooltip"])
         btn_run.clicked.connect(
             lambda checked=False, sp=str(self.assets_path / scan_name), sk=step_key: self.runStepRequested.emit(sp, sk)
         )
@@ -611,11 +949,12 @@ class StepByStepDashboard(QWidget):
                 background-color: #0b7dda;
             }
         """)
+        btn_view.setToolTip(step_info["view_tooltip"])
         btn_view.clicked.connect(lambda: self._on_view_step(scan_name, step_key))
         btn_layout.addWidget(btn_view)
-        
-        # Modify button
-        btn_modify = QPushButton("Modify")
+
+        # Context button
+        btn_modify = QPushButton(step_info["modify_label"])
         btn_modify.setStyleSheet("""
             QPushButton {
                 background-color: #FF9800;
@@ -629,6 +968,7 @@ class StepByStepDashboard(QWidget):
                 background-color: #F57C00;
             }
         """)
+        btn_modify.setToolTip(step_info["modify_tooltip"])
         btn_modify.clicked.connect(lambda: self._on_modify_step(scan_name, step_key))
         btn_layout.addWidget(btn_modify)
         
@@ -661,6 +1001,7 @@ class StepByStepDashboard(QWidget):
             }
         """)
         btn_view.clicked.connect(lambda: self.openViewerRequested.emit(str(self.assets_path / scan_name)))
+        btn_view.setToolTip("Open the combined semantic viewer for this scan.")
         layout.addWidget(btn_view)
 
         btn_run_full = QPushButton("Run Full")
@@ -679,6 +1020,7 @@ class StepByStepDashboard(QWidget):
             }
         """)
         btn_run_full.clicked.connect(lambda: self.runPipelineRequested.emit(str(self.assets_path / scan_name)))
+        btn_run_full.setToolTip("Run the automated backend chain for this scan.")
         layout.addWidget(btn_run_full)
 
         btn_map = QPushButton("Map")
@@ -697,6 +1039,7 @@ class StepByStepDashboard(QWidget):
             }
         """)
         btn_map.clicked.connect(lambda: self.openMapRequested.emit(str(self.assets_path / scan_name)))
+        btn_map.setToolTip("Open the Leaflet map for this scan if fusion objects and/or powerline overlays exist.")
         layout.addWidget(btn_map)
         
         # Save button (only visible if modified)
@@ -787,8 +1130,9 @@ class StepByStepDashboard(QWidget):
     
     def _on_view_step(self, scan_name, step_key):
         """Handle view button click"""
+        title = self.STEP_DETAILS[step_key]["title"]
         print(f"VIEW clicked: {scan_name} -> {step_key}")
-        self.add_notification(f"View requested: {scan_name} - {step_key}", "info")
+        self.add_notification(f"View requested: {scan_name} - {title}", "info")
         if step_key == "filtering":
             scan_dir = self.assets_path / scan_name
             metadata = self.scans_data.get(scan_name, {})
@@ -798,6 +1142,11 @@ class StepByStepDashboard(QWidget):
                 if filepath is not None and filepath.exists():
                     self.openFilterViewerRequested.emit(str(filepath))
                     return
+            QMessageBox.information(
+                self,
+                "Filtering",
+                "No filtered or raw point cloud is available yet. Run Pose Recovery first so the scan has a point cloud to inspect.",
+            )
             return
         self.openViewerRequested.emit(str(self.assets_path / scan_name))
 
@@ -813,9 +1162,12 @@ class StepByStepDashboard(QWidget):
     #TODO I have to pass the parameters to wire extraction TODO TODO TODO TODO 
     def _on_modify_step(self, scan_name, step_key):
         """Handle modify button click"""
+        scan_dir = self.assets_path / scan_name
+        metadata = self.scans_data.get(scan_name, {})
+
         if step_key == "wire_extraction":
             # Show parameter dialog for wires
-            current_params = self.scans_data.get(scan_name, {}).get("wire_params", {})
+            current_params = metadata.get("wire_params", {})
             dialog = WireParametersDialog(current_params, self)
             
             if dialog.exec() == QDialog.Accepted:
@@ -833,19 +1185,80 @@ class StepByStepDashboard(QWidget):
                 
                 self.add_notification(f"Modified wire parameters for {scan_name}", "info")
         elif step_key == "filtering":
-            print(f"MODIFY clicked: {scan_name} -> {step_key}")
+            print(f"OPEN FILTER clicked: {scan_name} -> {step_key}")
             if scan_name in self.scans_data:
-                files_dict = self.scans_data[scan_name].get("files", {})
+                files_dict = metadata.get("files", {})
                 filepath = files_dict.get("filtered") or files_dict.get("las") or files_dict.get("pcd") or ""
                 print(f"Opening filter viewer for {scan_name} with file: {filepath}")
                 if filepath:
-                    resolved = resolve_scan_path(self.assets_path / scan_name, filepath)
+                    resolved = resolve_scan_path(scan_dir, filepath)
                     if resolved is not None:
                         self.openFilterViewerRequested.emit(str(resolved))
-            
+                        return
+            QMessageBox.information(
+                self,
+                "Filtering",
+                "Filtering is a manual step. Run Pose Recovery first, then use Open/View to inspect the available point cloud in the filter tool.",
+            )
+        elif step_key == "inference":
+            current_config = metadata.get("config", {}).get("inference", {})
+            dialog = InferenceParametersDialog(current_config=current_config, scan_dir=scan_dir, parent=self)
+            if dialog.exec() == QDialog.Accepted:
+                metadata.setdefault("config", {})["inference"] = dialog.get_config()
+                self.modified_scans.add(scan_name)
+                self._show_save_button(scan_name)
+                self.add_notification(f"Updated inference settings for {scan_name}", "info")
+        elif step_key == "fusion":
+            current_config = metadata.get("config", {})
+            dialog = FusionParametersDialog(
+                fusion_config=current_config.get("fusion", {}),
+                gps_config=current_config.get("gps", {}),
+                scan_dir=scan_dir,
+                parent=self,
+            )
+            if dialog.exec() == QDialog.Accepted:
+                fusion_config, gps_config = dialog.get_configs()
+                metadata.setdefault("config", {})["fusion"] = fusion_config
+                metadata.setdefault("config", {})["gps"] = gps_config
+                self.modified_scans.add(scan_name)
+                self._show_save_button(scan_name)
+                self.add_notification(f"Updated fusion settings for {scan_name}", "info")
+        elif step_key == "slam":
+            StepInfoDialog(
+                "Pose Recovery Outputs",
+                (
+                    "### What this stage does\n"
+                    "- Replays the rosbag inside the Docker preprocessing environment.\n"
+                    "- Runs FAST-LIO SLAM to produce the local map point cloud.\n"
+                    "- Saves every `/image/compressed` frame as a JPG under the pose-recovery run folder.\n"
+                    "- Writes `image_timestamps.csv`, `tf_camera_out.csv`, and `tf_gps_out.csv`.\n\n"
+                    "### Main outputs\n"
+                    "- `processed/pose_recovery/<run>/pcd/scans.pcd`\n"
+                    "- `processed/pose_recovery/<run>/images/*.jpg`\n"
+                    "- `processed/pose_recovery/<run>/image_timestamps.csv`\n"
+                    "- `processed/pose_recovery/<run>/tf_camera_out.csv`\n"
+                    "- `processed/pose_recovery/<run>/tf_gps_out.csv`\n\n"
+                    "### Why it matters\n"
+                    "Image inference and Fusion both depend on the JPG images and camera timestamps created here."
+                ),
+                self,
+            ).exec()
+        elif step_key == "flai":
+            StepInfoDialog(
+                "FLAI Integration",
+                (
+                    "### Current state\n"
+                    "FLAI is not automated in this experimental GUI branch.\n\n"
+                    "### Expected role\n"
+                    "- Run FLAI externally if you need segmented LAS input.\n"
+                    "- Place or import the segmented LAS into the scan's processed folder.\n"
+                    "- The semantic viewer can still load the scan and combine those results with wires and Fusion outputs."
+                ),
+                self,
+            ).exec()
         else:
             print(f"MODIFY clicked: {scan_name} -> {step_key}")
-            self.add_notification(f"Modify requested: {scan_name} - {step_key}", "info")
+            self.add_notification(f"Details requested: {scan_name} - {self.STEP_DETAILS[step_key]['title']}", "info")
     
     def _delete_scan(self, scan_name):
         """Delete a scan"""
@@ -876,7 +1289,7 @@ class StepByStepDashboard(QWidget):
             self.btn_run_pipeline.setEnabled(True)
         else:
             self.selected_scan = None
-            self.status_label.setText("Ready - Step-by-Step Mode")
+            self.status_label.setText("Step-by-Step Mode: run Pose Recovery, Wires, Image Inference, or Fusion + GPS individually.")
             self.btn_run_pipeline.setEnabled(False)
     
     def _show_notifications(self):

@@ -68,9 +68,10 @@ The GUI currently supports two control styles:
   - runs the main end-to-end backend chain for a selected scan
 - Step-by-step mode
   - runs individual backend stages for:
-    - SLAM / pose recovery
+    - Pose Recovery
     - wire extraction
-    - fusion
+    - image inference
+    - fusion + GPS
   - opens the filtering tool for the filtering step
   - treats FLAI as an external/manual stage for now
 
@@ -238,7 +239,7 @@ Recommended usage:
 2. Select the scan.
 3. Use either:
    - Auto mode to run the main backend chain end to end, or
-   - Step-by-step mode to run SLAM, wire extraction, or fusion individually.
+   - Step-by-step mode to run Pose Recovery, wire extraction, image inference, or Fusion + GPS individually.
 4. Open the semantic viewer from the scan row.
 5. Open the map from the scan row when Fusion objects or powerline overlays are available.
 

@@ -13,6 +13,7 @@ DEFAULT_STATUS = {
     "filtering": "pending",
     "flai": "pending",
     "wire_extraction": "pending",
+    "inference": "pending",
     "fusion": "pending",
 }
 
@@ -32,6 +33,7 @@ DEFAULT_FILES = {
     "tf_camera_csv": "",
     "tf_gps_csv": "",
     "yolo_output_dir": "processed/fusion/yolo_inference",
+    "pred_images_dir": "",
     "masks_dir": "",
     "meta_dir": "",
     "fused_objects": "processed/fusion/fused_objects.json",
@@ -219,4 +221,3 @@ def newest_directory(root: Path) -> Path | None:
     if not dirs:
         return None
     return max(dirs, key=lambda path: path.stat().st_mtime)
-
