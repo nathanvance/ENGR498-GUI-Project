@@ -30,6 +30,11 @@ from semantic_overlay_loader import (
     load_fusion_objects,
     load_pole_neighbor_links,
 )
+from wire_measurement_methods import (
+    compute_fusion_span_wire_measurement,
+    compute_legacy_wire_measurement,
+    normalize_sag_method,
+)
 
 LAS_PATH = DEFAULT_LAS_PATH
 
@@ -253,6 +258,9 @@ class SemanticViewer(QWidget):
         self.ground_clearances = []  # list of (clearance, lowest_point, ground_point)
         self.catenary_params = []  # list of catenary parameters (a, b, c, t0, mean_xy, u_xy, mean_perp, perp_xy)
         self.wire_sags = []  # list of sag values in meters
+        self.wire_sag_details = []
+        self.wire_point_sets = []
+        self.wire_curve_points = []
         self.fusion_objects = []
         self.fusion_object_actors = []
         self.fusion_bbox_actors = []
@@ -260,8 +268,11 @@ class SemanticViewer(QWidget):
         self.fusion_widgets = []
         self.selected_fusion_index = None
         self.pole_distance_actors = []
+        self.pole_neighbor_links = []
+        self.support_box_actor = None
         self.current_scan_dir = None
         self.current_scan_metadata = None
+        self.current_wire_params = {"sag_method": "legacy"}
         self._open_map_callback = None
 
         self.xyz = None
@@ -494,6 +505,7 @@ class SemanticViewer(QWidget):
         scan_dir, metadata = load_scan_metadata(scan_ref)
         self.current_scan_dir = scan_dir
         self.current_scan_metadata = metadata
+        self.current_wire_params = dict(metadata.get("wire_params", {}))
 
         artifacts = resolve_artifact_paths(scan_dir, metadata)
         base_cloud = (
@@ -639,6 +651,103 @@ class SemanticViewer(QWidget):
         
         return float(sag) if sag > 0 else 0.0
 
+    def _refresh_wire_measurements(self):
+        self.wire_sags = []
+        self.wire_sag_details = []
+        sag_method = normalize_sag_method(self.current_wire_params.get("sag_method"))
+
+        for idx, curve_points in enumerate(self.wire_curve_points):
+            if sag_method == "fusion_span":
+                detail = compute_fusion_span_wire_measurement(
+                    self.wire_point_sets[idx] if idx < len(self.wire_point_sets) else None,
+                    self.pole_neighbor_links,
+                )
+            else:
+                detail = compute_legacy_wire_measurement(curve_points)
+
+            self.wire_sag_details.append(detail)
+            self.wire_sags.append(detail.get("sag_m"))
+
+        if self.selected_wire_index is not None and self.selected_wire_index < len(self.wire_widgets):
+            self.info_label.setText(self._build_wire_info_text(self.selected_wire_index))
+            self._draw_support_box(self.selected_wire_index)
+
+    def _build_wire_info_text(self, idx):
+        poly_entry = self.wire_widgets[idx]["poly"]
+        info_text = self._format_poly_info(idx, poly_entry)
+
+        clear_info = self.ground_clearances[idx] if idx < len(self.ground_clearances) else None
+        if clear_info is not None and clear_info[0] is not None:
+            info_text += f"\nGround clearance (center): {clear_info[0]:.3f} m"
+
+        detail = self.wire_sag_details[idx] if idx < len(self.wire_sag_details) else None
+        if not detail:
+            return info_text
+
+        method = detail.get("method", "legacy")
+        sag_m = detail.get("sag_m")
+        if sag_m is not None:
+            if method == "fusion_span":
+                info_text += f"\nWire sag (fusion span): {sag_m:.3f} m"
+                support_pair = detail.get("support_pair") or {}
+                if support_pair:
+                    info_text += (
+                        f"\nSupport span: {support_pair.get('source_name', 'pole_a')}"
+                        f" -> {support_pair.get('target_name', 'pole_b')}"
+                    )
+                if detail.get("horizontal_span_m") is not None:
+                    info_text += f"\nHorizontal span (Fusion): {float(detail['horizontal_span_m']):.3f} m"
+                if detail.get("fitted_a_m") is not None:
+                    info_text += f"\nCatenary a: {float(detail['fitted_a_m']):.3f} m"
+            else:
+                info_text += f"\nWire sag: {sag_m:.3f} m"
+        else:
+            label = "Wire sag (fusion span)" if method == "fusion_span" else "Wire sag"
+            info_text += f"\n{label}: unavailable"
+
+        message = str(detail.get("message", "")).strip()
+        if message:
+            info_text += f"\n{message}"
+        return info_text
+
+    def _draw_support_box(self, idx):
+        if self.support_box_actor is not None:
+            try:
+                self.plotter.remove_actor(self.support_box_actor)
+            except Exception:
+                pass
+            self.support_box_actor = None
+
+        if idx < 0 or idx >= len(self.wire_sag_details):
+            return
+
+        detail = self.wire_sag_details[idx]
+        if not isinstance(detail, dict) or detail.get("method") != "fusion_span" or detail.get("status") != "ok":
+            return
+
+        corners = np.asarray(detail.get("corridor_corners_map_xyz"), dtype=np.float64)
+        if corners.shape != (8, 3):
+            return
+
+        edge_pairs = [
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7),
+        ]
+        lines = []
+        for start, end in edge_pairs:
+            lines.extend([2, start, end])
+
+        box = pv.PolyData(corners)
+        box.lines = np.asarray(lines, dtype=np.int32)
+        self.support_box_actor = self.plotter.add_mesh(
+            box,
+            color="cyan",
+            line_width=2,
+            opacity=0.55,
+            name="wire_support_box",
+        )
+
     # -----------------------
     # Wire loading & rendering
     # -----------------------
@@ -682,10 +791,14 @@ class SemanticViewer(QWidget):
         self._actor_orig_colors = [None] * n_wires
         self.ground_clearances = [None] * n_wires
         self.catenary_params = []  # Reset catenary params list
-        self.wire_sags = []  # Reset sag list
+        self.wire_sags = []
+        self.wire_sag_details = []
+        self.wire_point_sets = []
+        self.wire_curve_points = []
 
         for i in range(n_wires):
             pts = np.array(locations[i])
+            self.wire_point_sets.append(pts)
             pdata = pv.PolyData(pts)
             color = self.wire_colors[i]
             actor = self.plotter.add_mesh(
@@ -718,6 +831,7 @@ class SemanticViewer(QWidget):
 
             self.curve_actors.append(curve_actor)
             self.catenary_params.append(catenary_params)  # Store params for this wire
+            self.wire_curve_points.append(curve_points if curve_points is not None and curve_points.size > 0 else None)
 
             # compute clearance and store - NOW PASS PARAMS
             clearance_info = (None, None, None)
@@ -725,14 +839,9 @@ class SemanticViewer(QWidget):
                 clearance_info = self.compute_ground_clearance(curve_points, catenary_params)
             self.ground_clearances[i] = clearance_info
 
-            # compute and store sag
-            sag = None
-            if curve_points is not None and curve_points.size > 0:
-                sag = self.compute_wire_sag(curve_points)
-            self.wire_sags.append(sag)
-
             self._create_wire_ui(i, poly[i] if i < len(poly) else None)
 
+        self._refresh_wire_measurements()
         self.plotter.render()
 
     def fit_catenary_wire(self, pts, n_samples=300):
@@ -941,23 +1050,10 @@ class SemanticViewer(QWidget):
         self._highlight_wire(idx)
         self.selected_wire_index = idx
 
-        poly_entry = self.wire_widgets[idx]["poly"]
-        # show poly info + clearance + sag
-        info_text = self._format_poly_info(idx, poly_entry)
-        
-        # append clearance if available
-        clear_info = self.ground_clearances[idx] if idx < len(self.ground_clearances) else None
-        if clear_info is not None and clear_info[0] is not None:
-            info_text += f"\nGround clearance (center): {clear_info[0]:.3f} m"
-        
-        # append sag if available
-        sag = self.wire_sags[idx] if idx < len(self.wire_sags) else None
-        if sag is not None:
-            info_text += f"\nWire sag: {sag:.3f} m"
-        
-        self.info_label.setText(info_text)
+        self.info_label.setText(self._build_wire_info_text(idx))
         #draws clearance line
         self._draw_clearance_line(idx)
+        self._draw_support_box(idx)
         self.plotter.render()
 
     def _clear_selection(self):
@@ -967,6 +1063,12 @@ class SemanticViewer(QWidget):
         self.info_label.setText("Select a wire or fusion object to see details.")
         if self.clearance_actor is not None:
             self.clearance_actor.SetVisibility(0)
+        if self.support_box_actor is not None:
+            try:
+                self.plotter.remove_actor(self.support_box_actor)
+            except Exception:
+                pass
+            self.support_box_actor = None
         self.plotter.render()
 
     def _highlight_wire(self, idx):
@@ -1008,6 +1110,7 @@ class SemanticViewer(QWidget):
         self._clear_fusion()
         self.fusion_objects = load_fusion_objects(objects_json_path)
         self.fusion_orig_colors = [None] * len(self.fusion_objects)
+        self.pole_neighbor_links = []
 
         for idx, item in enumerate(self.fusion_objects):
             centroid = np.asarray(item["centroid_map_xyz"], dtype=float)
@@ -1050,8 +1153,10 @@ class SemanticViewer(QWidget):
             except Exception as exc:
                 print("Failed to load pole neighbor links:", exc)
                 pole_links = []
+            self.pole_neighbor_links = pole_links
             self._draw_pole_neighbor_links(pole_links)
 
+        self._refresh_wire_measurements()
         self.plotter.render()
 
     def _create_fusion_ui(self, idx, item):
@@ -1209,6 +1314,14 @@ class SemanticViewer(QWidget):
         self.fusion_widgets = []
         self.selected_fusion_index = None
         self.pole_distance_actors = []
+        self.pole_neighbor_links = []
+        if self.support_box_actor is not None:
+            try:
+                self.plotter.remove_actor(self.support_box_actor)
+            except Exception:
+                pass
+            self.support_box_actor = None
+        self._refresh_wire_measurements()
 
     # -----------------------
     # Utilities
@@ -1268,6 +1381,15 @@ class SemanticViewer(QWidget):
         self.selected_wire_index = None
         self.ground_clearances = []
         self.wire_sags = []
+        self.wire_sag_details = []
+        self.wire_point_sets = []
+        self.wire_curve_points = []
+        if self.support_box_actor is not None:
+            try:
+                self.plotter.remove_actor(self.support_box_actor)
+            except Exception:
+                pass
+            self.support_box_actor = None
         self.info_label.setText("Select a wire or fusion object to see details.")
         self.plotter.render()
 
@@ -1279,6 +1401,7 @@ class SemanticViewer(QWidget):
 
         self.current_scan_dir = None
         self.current_scan_metadata = None
+        self.current_wire_params = {"sag_method": "legacy"}
         self.btn_open_map.setEnabled(False)
         self.load_las_file()
         # attempt to load saved wire & ground files (if they exist)

@@ -51,7 +51,7 @@ def load_fusion_objects(path: str | Path) -> list[dict[str, Any]]:
 
 def load_pole_neighbor_links(path: str | Path, fusion_objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    neighbors = payload.get("pole_neighbors", [])
+    neighbors = payload.get("pole_neighbors", payload.get("distances", []))
     if not isinstance(neighbors, list):
         return []
 
@@ -60,18 +60,32 @@ def load_pole_neighbor_links(path: str | Path, fusion_objects: list[dict[str, An
     for item in neighbors:
         if not isinstance(item, dict):
             continue
-        source_name = str(item.get("source_pole", ""))
-        target_name = str(item.get("target_pole", ""))
+        source_name = str(item.get("source_pole") or item.get("from_object_name") or "")
+        target_name = str(item.get("target_pole") or item.get("to_object_name") or "")
         source = by_name.get(source_name)
         target = by_name.get(target_name)
-        if source is None or target is None:
+        if source is None:
+            source_centroid = np.asarray(
+                _to_float_triplet(item.get("from_centroid_map_xyz"), default=(0.0, 0.0, 0.0)),
+                dtype=np.float64,
+            )
+        else:
+            source_centroid = np.asarray(source["centroid_map_xyz"], dtype=np.float64)
+        if target is None:
+            target_centroid = np.asarray(
+                _to_float_triplet(item.get("to_centroid_map_xyz"), default=(0.0, 0.0, 0.0)),
+                dtype=np.float64,
+            )
+        else:
+            target_centroid = np.asarray(target["centroid_map_xyz"], dtype=np.float64)
+        if not source_name or not target_name:
             continue
         links.append(
             {
                 "source_name": source_name,
                 "target_name": target_name,
-                "source_centroid": np.asarray(source["centroid_map_xyz"], dtype=np.float64),
-                "target_centroid": np.asarray(target["centroid_map_xyz"], dtype=np.float64),
+                "source_centroid": source_centroid,
+                "target_centroid": target_centroid,
                 "horizontal_distance_m": float(item.get("horizontal_distance_m", 0.0)),
                 "distance_3d_m": float(item.get("distance_3d_m", 0.0)),
                 "delta_z_m": float(item.get("delta_z_m", 0.0)),
@@ -101,4 +115,3 @@ def format_fusion_info(item: dict[str, Any]) -> str:
             f"GPS: lat={float(gps['lat']):.8f}, lon={float(gps['lon']):.8f}, alt={float(gps.get('alt', 0.0)):.3f}"
         )
     return "\n".join(text)
-

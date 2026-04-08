@@ -81,7 +81,7 @@ def main() -> int:
     normalized_args = normalize_workflow_args(args.mode, list(args.args))
     inner_command = " ".join(
         shlex.quote(arg)
-        for arg in ["./docker/run_pipeline.sh", args.mode, *normalized_args]
+        for arg in ["bash", "./docker/run_pipeline.sh", args.mode, *normalized_args]
     )
     docker_selector = (
         'if command -v docker >/dev/null 2>&1 && docker version >/dev/null 2>&1; then DOCKER_CMD=docker; '
@@ -93,7 +93,7 @@ def main() -> int:
         f"{docker_selector} && "
         f"\"$DOCKER_CMD\" compose run -T --rm "
         f"portable-ros-stack "
-        f"bash -lc {shlex.quote(f'exec {inner_command}')}"
+        f"bash -lc {shlex.quote(inner_command)}"
     )
     return run_wsl(docker_cmd)
 

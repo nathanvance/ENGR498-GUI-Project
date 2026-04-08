@@ -28,7 +28,7 @@ class WireParametersDialog(QDialog):
         self.setMinimumWidth(500)
         
         if current_params is None:
-            current_params = {"R": 0.5, "angleThr": 10, "linearity": 0.98}
+            current_params = {"R": 0.5, "angleThr": 10, "linearity": 0.98, "sag_method": "legacy"}
         
         self._setup_ui(current_params)
         
@@ -120,6 +120,31 @@ class WireParametersDialog(QDialog):
         linearity_layout.addWidget(linearity_desc)
         
         form.addRow("Linearity Threshold:", linearity_widget)
+
+        sag_method_widget = QWidget()
+        sag_method_layout = QVBoxLayout()
+        sag_method_layout.setContentsMargins(0, 0, 0, 0)
+        sag_method_widget.setLayout(sag_method_layout)
+
+        self.sag_method_combo = QComboBox()
+        self.sag_method_combo.addItem("Legacy chord-based sag", "legacy")
+        self.sag_method_combo.addItem("Fusion span catenary sag", "fusion_span")
+        current_sag_method = str(current_params.get("sag_method", "legacy"))
+        current_index = self.sag_method_combo.findData(current_sag_method)
+        self.sag_method_combo.setCurrentIndex(current_index if current_index >= 0 else 0)
+        sag_method_layout.addWidget(self.sag_method_combo)
+
+        sag_method_desc = QLabel(
+            "<b>Sag Measurement Method</b><br>"
+            "Choose how sag is computed in the semantic viewer.<br>"
+            "<b>Legacy chord-based sag</b> uses only the fitted wire curve.<br>"
+            "<b>Fusion span catenary sag</b> matches the wire to Fusion pole-pair spans and only works after the Fusion step completes."
+        )
+        sag_method_desc.setWordWrap(True)
+        sag_method_desc.setStyleSheet("color: #666; font-size: 11px; background-color: #f5f5f5; padding: 8px; border-radius: 4px;")
+        sag_method_layout.addWidget(sag_method_desc)
+
+        form.addRow("Sag Method:", sag_method_widget)
         
         layout.addLayout(form)
         
@@ -134,7 +159,8 @@ class WireParametersDialog(QDialog):
         return {
             "R": self.r_spin.value(),
             "angleThr": self.angle_spin.value(),
-            "linearity": self.linearity_spin.value()
+            "linearity": self.linearity_spin.value(),
+            "sag_method": self.sag_method_combo.currentData(),
         }
 
 
@@ -822,6 +848,8 @@ class StepByStepDashboard(QWidget):
         for scan_dir in self.assets_path.iterdir():
             if not scan_dir.is_dir():
                 continue
+            if not (scan_dir / "metadata.json").is_file():
+                continue
 
             try:
                 _, metadata = load_scan_metadata(scan_dir)
@@ -1140,6 +1168,7 @@ class StepByStepDashboard(QWidget):
                 print(f"  R (Search Radius): {params['R']} m")
                 print(f"  angleThr (Angle Threshold): {params['angleThr']}°")
                 print(f"  linearity (Linearity Threshold): {params['linearity']}")
+                print(f"  sag_method: {params['sag_method']}")
                 
                 # Update metadata
                 if scan_name in self.scans_data:

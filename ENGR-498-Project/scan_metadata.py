@@ -71,6 +71,7 @@ DEFAULT_WIRE_PARAMS = {
     "R": 0.5,
     "angleThr": 10,
     "linearity": 0.98,
+    "sag_method": "legacy",
 }
 
 

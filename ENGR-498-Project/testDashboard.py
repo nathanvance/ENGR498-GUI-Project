@@ -45,15 +45,12 @@ class DashboardTestWindow(QMainWindow):
         self.auto_dashboard = DashboardView(assets_path=str(ASSETS_DIR))
         self.step_dashboard = StepByStepDashboard(assets_path=str(ASSETS_DIR))
         self.calibration_view = CalibrationModeView(default_output_root=CALIBRATION_OUTPUT_ROOT)
-        self.filter_viewer = PointCloudFilterViewer(filename=None)
-        self.semantic_viewer = CombinedSemanticViewer()
-        self.semantic_viewer.set_open_map_callback(self.open_map_for_scan)
+        self.filter_viewer = None
+        self.semantic_viewer = None
 
         self.stack.addWidget(self.auto_dashboard)   # index 0
         self.stack.addWidget(self.step_dashboard)   # index 1
         self.stack.addWidget(self.calibration_view) # index 2
-        self.stack.addWidget(self.filter_viewer)    # index 3
-        self.stack.addWidget(self.semantic_viewer)  # index 4
 
         self.stack.setCurrentWidget(self.auto_dashboard)
         self._connect_signals()
@@ -93,8 +90,20 @@ class DashboardTestWindow(QMainWindow):
         self.step_dashboard.openFilterViewerRequested.connect(self.open_filter_viewer)
         self.calibration_view.runCalibrationRequested.connect(self.run_calibration_workflow)
 
-        self.filter_viewer.backRequested.connect(self._restore_previous_widget)
-        self.semantic_viewer.backRequested.connect(self._restore_previous_widget)
+    def _get_filter_viewer(self):
+        if self.filter_viewer is None:
+            self.filter_viewer = PointCloudFilterViewer(filename=None)
+            self.filter_viewer.backRequested.connect(self._restore_previous_widget)
+            self.stack.addWidget(self.filter_viewer)
+        return self.filter_viewer
+
+    def _get_semantic_viewer(self):
+        if self.semantic_viewer is None:
+            self.semantic_viewer = CombinedSemanticViewer()
+            self.semantic_viewer.set_open_map_callback(self.open_map_for_scan)
+            self.semantic_viewer.backRequested.connect(self._restore_previous_widget)
+            self.stack.addWidget(self.semantic_viewer)
+        return self.semantic_viewer
 
     def switch_to(self, widget):
         self.stack.setCurrentWidget(widget)
@@ -369,17 +378,19 @@ class DashboardTestWindow(QMainWindow):
         if not filepath or not Path(filepath).exists():
             QMessageBox.information(self, "Filter Viewer", "The requested filter input file does not exist yet.")
             return
-        self.filter_viewer.filename = filepath
-        if hasattr(self.filter_viewer, "load_point_cloud"):
-            self.filter_viewer.load_point_cloud()
-        elif hasattr(self.filter_viewer, "load_las_file"):
-            self.filter_viewer.load_las_file()
-        self._show_temporary_view(self.filter_viewer)
+        filter_viewer = self._get_filter_viewer()
+        filter_viewer.filename = filepath
+        if hasattr(filter_viewer, "load_point_cloud"):
+            filter_viewer.load_point_cloud()
+        elif hasattr(filter_viewer, "load_las_file"):
+            filter_viewer.load_las_file()
+        self._show_temporary_view(filter_viewer)
 
     def open_semantic_viewer(self, scan_ref: str | Path):
         scan_dir, _ = load_scan_metadata(scan_ref)
-        self.semantic_viewer.initialize_viewer(scan_dir)
-        self._show_temporary_view(self.semantic_viewer)
+        semantic_viewer = self._get_semantic_viewer()
+        semantic_viewer.initialize_viewer(scan_dir)
+        self._show_temporary_view(semantic_viewer)
 
     def open_map_for_scan(self, scan_ref: str | Path, metadata_override: dict | None = None):
         scan_dir, metadata = load_scan_metadata(scan_ref)

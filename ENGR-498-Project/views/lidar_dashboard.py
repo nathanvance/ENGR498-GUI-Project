@@ -485,6 +485,8 @@ class DashboardView(QWidget):
         for scan_dir in self.assets_path.iterdir():
             if not scan_dir.is_dir():
                 continue
+            if not (scan_dir / "metadata.json").is_file():
+                continue
 
             try:
                 _, metadata = load_scan_metadata(scan_dir)
