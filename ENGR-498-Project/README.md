@@ -2,8 +2,8 @@
 
 ## Overview
 
-This folder contains the portable project code used across the current Senior
-Design workflow:
+This folder contains the portable project code used across the Senior Design
+workflow:
 
 - `fusion/`
   Camera-to-LiDAR semantic fusion, GPS georeferencing, Leaflet output, and
@@ -16,7 +16,7 @@ Design workflow:
 - `views/`, `widgets/`, `main.py`
   Windows-side GUI and dashboard code.
 - `testDashboard.py`
-  Integrated dashboard harness that connects the current GUI to rosbag
+  Integrated dashboard harness that connects the GUI to rosbag
   preprocessing, YOLO inference, fusion, georeferencing, and the combined
   semantic viewer.
 - `PreProcessing_GUI/`
@@ -34,9 +34,9 @@ For backend documentation, use:
 
 ## Integrated GUI Flow
 
-The current `main.py` entrypoint launches the integrated dashboard window.
+`main.py` launches the integrated dashboard window.
 
-From the GUI, the current experimental integration supports:
+From the GUI, the dashboard supports:
 
 - scan creation by importing a rosbag into `assets/<scan_name>/raw/`
 - Docker-backed calibration mode for direct visual LiDAR calibration
@@ -57,13 +57,13 @@ The semantic viewer is driven by:
 - `Matlab_ExtractPowerLine/testViewer.py`
 - `Matlab_ExtractPowerLine/testSemanticLidarViewer.py`
 
-and the dashboard orchestration layer is currently in:
+and the dashboard orchestration layer is in:
 
 - `testDashboard.py`
 - `gui_pipeline.py`
 - `scan_metadata.py`
 
-The GUI currently supports two major modes:
+The GUI supports two major modes:
 
 - Calibration mode
   - runs direct visual LiDAR calibration in Docker
@@ -132,7 +132,7 @@ powershell -ExecutionPolicy Bypass -File .\install_repo_python_env.ps1 `
 ```
 
 Use the lock file instead of the curated requirements file if you want the
-exact currently validated package snapshot:
+exact validated package snapshot:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install_repo_python_env.ps1 `

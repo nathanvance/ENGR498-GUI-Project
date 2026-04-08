@@ -27,8 +27,8 @@ Calibration mode and post-processing mode are intentionally separate:
   feeds those outputs into wire extraction, image inference, Fusion, and GPS
   georeferencing
 
-These workflows can still be launched manually, but the experimental GUI branch
-also drives the pose-recovery workflow from the Windows dashboard through:
+These workflows can still be launched manually, and the Windows dashboard also
+drives the pose-recovery workflow through:
 
 - `ENGR-498-Project/testDashboard.py`
 - `ENGR-498-Project/gui_pipeline.py`
@@ -169,9 +169,9 @@ ROS/WSL setup. That staged runtime is now checked into the repo under
 - `ws_livox`
 
 Those `devel` spaces are not relocatable in a clean source-only sense, so they
-are intentionally preserved as part of the runtime packaging flow. The portable
-change in this branch is that the repo no longer hardcodes one developer's
-username or old folder names to find them.
+are intentionally preserved as part of the runtime packaging flow. The repo
+uses neutral, documented paths instead of hardcoding one developer's username
+or old folder names to find them.
 
 Normal users do not need any of those upstream workspaces locally.
 

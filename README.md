@@ -1,14 +1,13 @@
 # ENGR498 GUI Project
 
-This repository contains the integrated Senior Design software stack for:
+This repository contains the Senior Design software stack for:
 
 - Windows-side GUI and visualization tools
 - Fusion of camera segmentation masks into LiDAR / SLAM point clouds
 - Docker / WSL rosbag preprocessing for calibration, FAST-LIO, and TF sampling
 - MATLAB-side powerline processing assets and viewers
 
-The experimental GUI/backend integration branch also wires those subsystems
-together so the Windows dashboard can:
+The Windows dashboard can coordinate those subsystems so it can:
 
 - launch the rosbag preprocessing stack,
 - launch wire extraction into the per-scan processed folder,

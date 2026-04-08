@@ -32,12 +32,12 @@ Example workflow:
 3. Run `georeference_from_tf_gps.py`
 4. Open the Leaflet viewer with the generated JSON outputs
 
-The experimental GUI integration also calls these scripts from the dashboard:
+The integrated dashboard also calls these scripts:
 
 - `testDashboard.py`
 - `gui_pipeline.py`
 
-That GUI path currently:
+That GUI path:
 
 1. consumes the JPGs and CSV outputs from `rosbag_preprocessing`,
 2. reuses the per-scan wire extraction outputs when present,
@@ -57,6 +57,6 @@ The GUI now also supports step-by-step execution for:
 Calibration is a separate GUI mode. Fusion relies on that calibration mode
 having already produced camera intrinsics and the LiDAR-camera extrinsic.
 
-FLAI remains an external/manual stage in the current branch.
+FLAI remains an external/manual stage.
 
 Detailed usage and algorithm notes live in `README.txt`.
