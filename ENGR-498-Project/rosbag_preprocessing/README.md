@@ -8,6 +8,7 @@ Normal user expectation:
 - clone the repo
 - start Docker Desktop
 - run `bash scripts/build_image_wsl.sh`
+- after pulling updates, run `bash scripts/update_image_wsl.sh`
 - use the GUI or the launcher scripts
 
 You do **not** need local `ws_calib`, `ws_livox`, or `iridescence` folders on
@@ -77,6 +78,15 @@ From a WSL shell opened in this folder:
 ```bash
 bash scripts/build_image_wsl.sh
 ```
+
+For later updates after `git pull`, run:
+
+```bash
+bash scripts/update_image_wsl.sh
+```
+
+That wrapper rebuilds the same image and lets Docker reuse cached layers when
+available, so repeat updates are usually much faster than the first install.
 
 ### 3. Run a workflow
 
@@ -253,6 +263,19 @@ Important:
 - the build helper creates repo-side folders like `outputs/` and `dist/`
 - it does **not** require upstream WSL ROS folders on a normal user machine
 - it builds directly from the runtime that ships in this repo
+
+## Update The Image
+
+After pulling repo updates, rebuild from a WSL shell opened in this folder:
+
+```bash
+git pull
+bash scripts/update_image_wsl.sh
+```
+
+This uses the same Docker build flow as the first install. When the machine
+still has its prior Docker layers cached, the update is usually much faster
+than a fresh build.
 
 Maintainer-only refresh flow:
 
