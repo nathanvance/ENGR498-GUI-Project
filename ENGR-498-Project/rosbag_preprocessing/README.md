@@ -123,9 +123,13 @@ The recommended Windows-side Python environment for the repo is installed from
 the project root with:
 
 ```powershell
+python -m venv .venv
 powershell -ExecutionPolicy Bypass -File ..\install_repo_python_env.ps1 `
-  -Python C:\path\to\python.exe
+  -Python ..\.venv\Scripts\python.exe
 ```
+
+That repo-local `.venv` is the recommended setup because the installer writes
+packages into whichever interpreter is passed with `-Python`.
 
 Required for the calibration GUIs:
 

@@ -123,12 +123,21 @@ Required for calibration GUIs inside Docker:
 
 ## Windows Python Environment Setup
 
-Create or choose a Python 3.11 virtual environment, then install the repo's
-Windows-side Python dependencies:
+Use a repo-local virtual environment so the installer does not modify a
+system-wide or personal Python installation.
+
+From `ENGR-498-Project/`:
+
+```powershell
+python -m venv .venv
+```
+
+Then install the repo's Windows-side Python dependencies into that local
+virtual environment:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install_repo_python_env.ps1 `
-  -Python C:\path\to\python.exe
+  -Python .\.venv\Scripts\python.exe
 ```
 
 Use the lock file instead of the curated requirements file if you want the
@@ -136,7 +145,7 @@ exact validated package snapshot:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install_repo_python_env.ps1 `
-  -Python C:\path\to\python.exe `
+  -Python .\.venv\Scripts\python.exe `
   -UseLockFile
 ```
 
@@ -149,6 +158,10 @@ configured for Python, add:
 
 Important:
 
+- `install_repo_python_env.ps1` installs packages into the interpreter passed
+  with `-Python`
+- to avoid accidentally changing a global Python install, keep using the
+  repo-local `.venv\Scripts\python.exe`
 - the actual virtual environment directory is intentionally not committed to
   the repo
 - portability is handled through:
@@ -163,7 +176,11 @@ Important:
 
 ### 1. Set up the Windows Python environment
 
-Run the installer above.
+Create `.venv` in `ENGR-498-Project/` and run the installer above against:
+
+```text
+.\.venv\Scripts\python.exe
+```
 
 ### 2. Set up Docker / WSL for rosbag preprocessing
 
@@ -256,7 +273,7 @@ assets/<scan_name>/processed/
 From `ENGR-498-Project/`:
 
 ```powershell
-python .\main.py
+.\.venv\Scripts\python.exe .\main.py
 ```
 
 Recommended usage:

@@ -11,6 +11,17 @@ and installed from the project root with:
 
 - `install_repo_python_env.ps1`
 
+Recommended safe setup from `ENGR-498-Project/`:
+
+```powershell
+python -m venv .venv
+powershell -ExecutionPolicy Bypass -File .\install_repo_python_env.ps1 `
+  -Python .\.venv\Scripts\python.exe
+```
+
+That keeps the Fusion-side dependencies inside the repo-local virtual
+environment instead of modifying a global Python installation.
+
 Main scripts:
 
 - `fuse_masks_to_slam.py`

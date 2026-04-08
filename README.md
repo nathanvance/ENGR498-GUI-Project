@@ -29,7 +29,7 @@ Start with:
 That document explains:
 
 - host requirements
-- Windows Python environment setup
+- safe Windows Python environment setup with a repo-local `.venv`
 - Docker / WSL setup for rosbag preprocessing
 - local YOLO inference and Colab fallback
 - the integrated GUI entrypoints and scan metadata flow
