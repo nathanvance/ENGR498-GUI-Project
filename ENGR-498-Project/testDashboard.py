@@ -7,8 +7,6 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QStackedWidget, QToolBar
 
-from Matlab_ExtractPowerLine.testSemanticLidarViewer import SemanticViewer as CombinedSemanticViewer
-from PreProcessing_GUI.point_cloud_filter_gui import PointCloudFilterViewer
 from calibration_bridge import CALIBRATION_OUTPUT_ROOT, newest_calibration_run, resolve_calibration_run
 from gui_pipeline import BackendPipelineThread, CalibrationWorkflowThread, LeafletServerManager
 from project_paths import ASSETS_DIR
@@ -92,6 +90,8 @@ class DashboardTestWindow(QMainWindow):
 
     def _get_filter_viewer(self):
         if self.filter_viewer is None:
+            from PreProcessing_GUI.point_cloud_filter_gui import PointCloudFilterViewer
+
             self.filter_viewer = PointCloudFilterViewer(filename=None)
             self.filter_viewer.backRequested.connect(self._restore_previous_widget)
             self.stack.addWidget(self.filter_viewer)
@@ -99,6 +99,8 @@ class DashboardTestWindow(QMainWindow):
 
     def _get_semantic_viewer(self):
         if self.semantic_viewer is None:
+            from Matlab_ExtractPowerLine.testSemanticLidarViewer import SemanticViewer as CombinedSemanticViewer
+
             self.semantic_viewer = CombinedSemanticViewer()
             self.semantic_viewer.set_open_map_callback(self.open_map_for_scan)
             self.semantic_viewer.backRequested.connect(self._restore_previous_widget)
