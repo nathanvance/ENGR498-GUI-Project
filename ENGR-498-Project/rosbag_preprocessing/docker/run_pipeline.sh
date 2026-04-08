@@ -43,7 +43,10 @@ case "$MODE" in
     if [[ -n "$MODE" ]]; then
       shift
     fi
-    exec bash "$@"
+    if [[ $# -gt 0 ]]; then
+      exec "$@"
+    fi
+    exec bash
     ;;
   *)
     exec "$@"

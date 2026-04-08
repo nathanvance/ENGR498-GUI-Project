@@ -79,9 +79,9 @@ def main() -> int:
 
     project_root_wsl = to_wsl_path(WINDOWS_PROJECT_ROOT)
     normalized_args = normalize_workflow_args(args.mode, list(args.args))
-    inner_command = " ".join(
+    compose_args = " ".join(
         shlex.quote(arg)
-        for arg in ["bash", "./docker/run_pipeline.sh", args.mode, *normalized_args]
+        for arg in ["compose", "run", "-T", "--rm", "portable-ros-stack", "bash", "./docker/run_pipeline.sh", args.mode, *normalized_args]
     )
     docker_selector = (
         'if command -v docker >/dev/null 2>&1 && docker version >/dev/null 2>&1; then DOCKER_CMD=docker; '
@@ -91,9 +91,7 @@ def main() -> int:
     docker_cmd = (
         f"cd {shlex.quote(project_root_wsl)} && "
         f"{docker_selector} && "
-        f"\"$DOCKER_CMD\" compose run -T --rm "
-        f"portable-ros-stack "
-        f"bash -lc {shlex.quote(inner_command)}"
+        f"\"\\$DOCKER_CMD\" {compose_args}"
     )
     return run_wsl(docker_cmd)
 
