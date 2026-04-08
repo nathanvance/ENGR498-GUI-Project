@@ -12,12 +12,12 @@ Usage:
 
 Description:
   Build the rosbag_preprocessing Docker image from the committed runtime staged
-  in context/runtime/. This works on a fresh machine without host-side
+  in rt/. This works on a fresh machine without host-side
   ws_calib/ws_livox folders.
 
 Options:
   --refresh-runtime
-      Maintainer-only option. Refresh context/runtime/ from the current WSL
+      Maintainer-only option. Refresh rt/ from the current WSL
       development environment before building.
 
   --image-tag TAG
@@ -85,7 +85,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p \
-  "${PROJECT_ROOT}/context/runtime" \
+  "${PROJECT_ROOT}/rt" \
   "${PROJECT_ROOT}/outputs/calibration" \
   "${PROJECT_ROOT}/outputs/pose_recovery" \
   "${PROJECT_ROOT}/dist"
@@ -94,9 +94,9 @@ if [[ "${REFRESH_RUNTIME}" == "1" ]]; then
   "${PROJECT_ROOT}/scripts/sync_wsl_context.sh"
 fi
 
-if [[ ! -d "${PROJECT_ROOT}/context/runtime/home/portable/ws_calib" ]] || \
-   [[ ! -d "${PROJECT_ROOT}/context/runtime/home/portable/ws_livox" ]]; then
-  echo "ERROR: committed runtime is missing from context/runtime/." >&2
+if [[ ! -d "${PROJECT_ROOT}/rt/calib" ]] || \
+   [[ ! -d "${PROJECT_ROOT}/rt/livox" ]]; then
+  echo "ERROR: committed runtime is missing from rt/." >&2
   echo "This repo is expected to include the staged Docker runtime so fresh" >&2
   echo "machines can build without local ws_calib/ws_livox folders." >&2
   echo >&2

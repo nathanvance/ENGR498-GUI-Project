@@ -53,9 +53,12 @@ RUN id -u "${PORTABLE_ROS_USER}" >/dev/null 2>&1 || useradd -m -d "${PORTABLE_RO
 
 WORKDIR /workspace
 
-COPY context/runtime/home/portable ${PORTABLE_ROS_HOME}
-COPY context/runtime/usr_local/lib /usr/local/lib
-COPY context/runtime/usr_local/share /usr/local/share
+COPY rt/calib ${PORTABLE_ROS_HOME}/ws_calib
+COPY rt/livox ${PORTABLE_ROS_HOME}/ws_livox
+COPY rt/iri ${PORTABLE_ROS_HOME}/iridescence
+COPY rt/lib ${PORTABLE_ROS_HOME}/lib
+COPY rt/usr/lib /usr/local/lib
+COPY rt/usr/share /usr/local/share
 COPY overrides /opt/portable_ros_stack/overrides
 COPY docker/ros_entrypoint.sh /ros_entrypoint.sh
 

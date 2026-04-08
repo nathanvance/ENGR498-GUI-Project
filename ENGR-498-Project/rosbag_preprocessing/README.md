@@ -52,11 +52,13 @@ The repo copy is designed to be portable at the source/configuration level:
 The image is built from the staged ROS runtime stored in:
 
 ```text
-context/runtime/
+rt/
 ```
 
 That staged runtime includes the ROS workspaces and libraries needed by the
-containerized calibration and rosbag preprocessing flows.
+containerized calibration and rosbag preprocessing flows. The runtime root is
+kept intentionally short so Windows clones are less likely to hit path-length
+limits during checkout.
 
 
 ## Quick Start
@@ -135,10 +137,12 @@ rosbag_preprocessing/
   docker/
   launcher/
   scripts/
-  context/
-    runtime/
-      home/
-      usr_local/
+  rt/
+    calib/
+    livox/
+    iri/
+    lib/
+    usr/
   outputs/
     calibration/
     pose_recovery/
@@ -152,7 +156,7 @@ Important folders:
 - `scripts/`
   WSL helper scripts for syncing the runtime, building the image, and exporting
   the image archive.
-- `context/runtime/`
+- `rt/`
   Staged runtime artifacts copied from the working WSL environment before a
   Docker build.
 - `outputs/`
@@ -162,8 +166,8 @@ Important folders:
 ## Why The Staged Runtime Still Matters
 
 This project still depends on staged runtime artifacts copied from a known-good
-ROS/WSL setup. That staged runtime is now checked into the repo under
-`context/runtime/`. It includes the catkin `devel` spaces from:
+ROS/WSL setup. That staged runtime is now checked into the repo under `rt/`.
+It includes the catkin `devel` spaces from:
 
 - `ws_calib`
 - `ws_livox`
@@ -205,7 +209,7 @@ This section only matters to maintainers who want to refresh the committed
 runtime. Normal users can skip it.
 
 When explicitly invoked, `scripts/sync_wsl_context.sh` copies the required
-runtime files from a known-good WSL environment into `context/runtime/`.
+runtime files from a known-good WSL environment into `rt/`.
 
 By default it looks under:
 
@@ -241,7 +245,7 @@ bash scripts/build_image_wsl.sh
 
 That script:
 
-1. verifies the committed runtime exists in `context/runtime/`
+1. verifies the committed runtime exists in `rt/`
 2. builds the Docker image with Compose
 
 Important:

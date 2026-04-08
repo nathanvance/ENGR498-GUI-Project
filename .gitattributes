@@ -3,5 +3,5 @@
 *.sh text eol=lf
 *.bash text eol=lf
 *.py text eol=lf
-ENGR-498-Project/rosbag_preprocessing/context/runtime/home/portable/ws_calib/devel/lib/libdirect_visual_lidar_calibration.so filter=lfs diff=lfs merge=lfs -text
-ENGR-498-Project/rosbag_preprocessing/context/runtime/home/portable/ws_livox/devel/lib/fast_lio/fastlio_mapping filter=lfs diff=lfs merge=lfs -text
+ENGR-498-Project/rosbag_preprocessing/rt/calib/devel/lib/libdirect_visual_lidar_calibration.so filter=lfs diff=lfs merge=lfs -text
+ENGR-498-Project/rosbag_preprocessing/rt/livox/devel/lib/fast_lio/fastlio_mapping filter=lfs diff=lfs merge=lfs -text

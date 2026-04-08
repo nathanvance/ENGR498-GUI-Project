@@ -2,15 +2,19 @@
 set -euo pipefail
 
 # Maintainer-only helper.
-# This refreshes the committed runtime staged in context/runtime/ from a known-
+# This refreshes the committed runtime staged in rt/ from a known-
 # good local WSL development environment. Normal users should not need to run
 # this before building the Docker image.
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONTEXT_ROOT="${PROJECT_ROOT}/context/runtime"
+RT_ROOT="${PROJECT_ROOT}/rt"
 RUNTIME_USER="${PORTABLE_ROS_RUNTIME_USER:-portable}"
-HOME_ROOT="${CONTEXT_ROOT}/home/${RUNTIME_USER}"
-USR_LOCAL_ROOT="${CONTEXT_ROOT}/usr_local"
+CONTAINER_HOME_ROOT="/home/${RUNTIME_USER}"
+STAGE_CALIB_ROOT="${RT_ROOT}/calib"
+STAGE_LIVOX_ROOT="${RT_ROOT}/livox"
+STAGE_IRI_ROOT="${RT_ROOT}/iri"
+STAGE_LIB_ROOT="${RT_ROOT}/lib"
+STAGE_USR_ROOT="${RT_ROOT}/usr"
 OVERRIDES_ROOT="${PROJECT_ROOT}/overrides"
 DEFAULT_WSL_STAGING_ROOT="${HOME}/Senior_Design_Docker_Image"
 WSL_HOME_ROOT="${WSL_HOME_ROOT:-${DEFAULT_WSL_STAGING_ROOT}}"
@@ -22,8 +26,14 @@ USR_LOCAL_PREFIX="${USR_LOCAL_PREFIX:-/usr/local}"
 
 mkdir -p "${WSL_HOME_ROOT}"
 
-rm -rf "${CONTEXT_ROOT}"
-mkdir -p "${HOME_ROOT}" "${USR_LOCAL_ROOT}/lib" "${USR_LOCAL_ROOT}/share"
+rm -rf "${RT_ROOT}"
+mkdir -p \
+  "${STAGE_CALIB_ROOT}" \
+  "${STAGE_LIVOX_ROOT}" \
+  "${STAGE_IRI_ROOT}/build" \
+  "${STAGE_LIB_ROOT}" \
+  "${STAGE_USR_ROOT}/lib" \
+  "${STAGE_USR_ROOT}/share"
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -74,11 +84,14 @@ rewrite_catkin_marker() {
 }
 
 patch_container_shell_scripts() {
-  python3 - "$HOME_ROOT" <<'PY'
+  python3 - "$RT_ROOT" "$CONTAINER_HOME_ROOT" <<'PY'
 from pathlib import Path
 import sys
 
-home_root = Path(sys.argv[1])
+rt_root = Path(sys.argv[1])
+container_home = Path(sys.argv[2])
+calib_root = rt_root / "calib"
+livox_root = rt_root / "livox"
 
 
 def replace_or_raise(text: str, needle: str, replacement: str, *, path: Path) -> str:
@@ -89,7 +102,7 @@ def replace_or_raise(text: str, needle: str, replacement: str, *, path: Path) ->
     raise RuntimeError(f"Expected text not found while patching {path}: {needle!r}")
 
 safe_blocks = {
-    home_root / "ws_calib/scripts/run_direct_visual_lidar_calibration_workflow.sh": (
+    calib_root / "scripts/run_direct_visual_lidar_calibration_workflow.sh": (
         'source /opt/ros/noetic/setup.bash\nsource "$HOME/ws_calib/devel/setup.bash"',
         'export ROS_DISTRO="${ROS_DISTRO:-noetic}"\n'
         'set +u\n'
@@ -98,7 +111,7 @@ safe_blocks = {
         'export ROS_PACKAGE_PATH="$HOME/ws_calib/src${ROS_PACKAGE_PATH:+:$ROS_PACKAGE_PATH}"\n'
         'set -u',
     ),
-    home_root / "ws_livox/scripts/run_pose_recovery_camera_gps.sh": (
+    livox_root / "scripts/run_pose_recovery_camera_gps.sh": (
         'source /opt/ros/noetic/setup.bash\nsource "$HOME/ws_livox/devel/setup.bash"',
         'export ROS_DISTRO="${ROS_DISTRO:-noetic}"\n'
         'set +u\n'
@@ -114,7 +127,7 @@ for path, (needle, replacement) in safe_blocks.items():
     text = replace_or_raise(text, needle, replacement, path=path)
     path.write_text(text, encoding="utf-8")
 
-calibration_workflow = home_root / "ws_calib/scripts/run_direct_visual_lidar_calibration_workflow.sh"
+calibration_workflow = calib_root / "scripts/run_direct_visual_lidar_calibration_workflow.sh"
 text = calibration_workflow.read_text(encoding="utf-8")
 text = replace_or_raise(
     text,
@@ -150,7 +163,7 @@ text = replace_or_raise(
 )
 calibration_workflow.write_text(text, encoding="utf-8")
 
-pose_recovery_camera_gps = home_root / "ws_livox/scripts/run_pose_recovery_camera_gps.sh"
+pose_recovery_camera_gps = livox_root / "scripts/run_pose_recovery_camera_gps.sh"
 text = pose_recovery_camera_gps.read_text(encoding="utf-8")
 text = replace_or_raise(
     text,
@@ -166,7 +179,7 @@ text = replace_or_raise(
 )
 pose_recovery_camera_gps.write_text(text, encoding="utf-8")
 
-pose_recovery = home_root / "ws_livox/scripts/run_pose_recovery.sh"
+pose_recovery = livox_root / "scripts/run_pose_recovery.sh"
 text = pose_recovery.read_text(encoding="utf-8")
 text = replace_or_raise(
     text,
@@ -232,10 +245,10 @@ if [[ ${#MISSING_INPUTS[@]} -gt 0 ]]; then
   exit 2
 fi
 
-sync_tree "${WS_CALIB_ROOT}/devel" "${HOME_ROOT}/ws_calib/devel"
-rewrite_catkin_marker "${HOME_ROOT}/ws_calib/devel/.catkin" "${HOME_ROOT}/ws_calib/src"
+sync_tree "${WS_CALIB_ROOT}/devel" "${STAGE_CALIB_ROOT}/devel"
+rewrite_catkin_marker "${STAGE_CALIB_ROOT}/devel/.catkin" "${CONTAINER_HOME_ROOT}/ws_calib/src"
 
-sync_tree "${WS_CALIB_ROOT}/src/direct_visual_lidar_calibration" "${HOME_ROOT}/ws_calib/src/direct_visual_lidar_calibration" \
+sync_tree "${WS_CALIB_ROOT}/src/direct_visual_lidar_calibration" "${STAGE_CALIB_ROOT}/src/direct_visual_lidar_calibration" \
   --exclude .git \
   --exclude build \
   --exclude devel \
@@ -243,13 +256,13 @@ sync_tree "${WS_CALIB_ROOT}/src/direct_visual_lidar_calibration" "${HOME_ROOT}/w
   --exclude docs \
   --exclude thirdparty
 
-sync_tree "${WS_CALIB_ROOT}/scripts" "${HOME_ROOT}/ws_calib/scripts" \
+sync_tree "${WS_CALIB_ROOT}/scripts" "${STAGE_CALIB_ROOT}/scripts" \
   --exclude __pycache__
 
-sync_tree "${WS_LIVOX_ROOT}/devel" "${HOME_ROOT}/ws_livox/devel"
-rewrite_catkin_marker "${HOME_ROOT}/ws_livox/devel/.catkin" "${HOME_ROOT}/ws_livox/src"
+sync_tree "${WS_LIVOX_ROOT}/devel" "${STAGE_LIVOX_ROOT}/devel"
+rewrite_catkin_marker "${STAGE_LIVOX_ROOT}/devel/.catkin" "${CONTAINER_HOME_ROOT}/ws_livox/src"
 
-sync_tree "${WS_LIVOX_ROOT}/src/FAST_LIO" "${HOME_ROOT}/ws_livox/src/FAST_LIO" \
+sync_tree "${WS_LIVOX_ROOT}/src/FAST_LIO" "${STAGE_LIVOX_ROOT}/src/FAST_LIO" \
   --exclude .git \
   --exclude doc \
   --exclude Log \
@@ -257,27 +270,27 @@ sync_tree "${WS_LIVOX_ROOT}/src/FAST_LIO" "${HOME_ROOT}/ws_livox/src/FAST_LIO" \
   --exclude build \
   --exclude devel
 
-sync_tree "${WS_LIVOX_ROOT}/src/livox_ros_driver" "${HOME_ROOT}/ws_livox/src/livox_ros_driver" \
+sync_tree "${WS_LIVOX_ROOT}/src/livox_ros_driver" "${STAGE_LIVOX_ROOT}/src/livox_ros_driver" \
   --exclude .git
 
-sync_tree "${WS_LIVOX_ROOT}/scripts" "${HOME_ROOT}/ws_livox/scripts" \
+sync_tree "${WS_LIVOX_ROOT}/scripts" "${STAGE_LIVOX_ROOT}/scripts" \
   --exclude __pycache__ \
   --exclude run_logs \
   --exclude pose_recovery_outputs
 
 if [[ -d "${OVERRIDES_ROOT}/ws_livox/scripts" ]]; then
-  rsync -a "${OVERRIDES_ROOT}/ws_livox/scripts/" "${HOME_ROOT}/ws_livox/scripts/"
+  rsync -a "${OVERRIDES_ROOT}/ws_livox/scripts/" "${STAGE_LIVOX_ROOT}/scripts/"
 fi
 
-sync_glob "${IRIDESCENCE_ROOT}/build/libiridescence.so*" "${HOME_ROOT}/iridescence/build"
-sync_file "${GLFW_SHIM_PATH}" "${HOME_ROOT}/lib/libglfw_hint_shim.so"
+sync_glob "${IRIDESCENCE_ROOT}/build/libiridescence.so*" "${STAGE_IRI_ROOT}/build"
+sync_file "${GLFW_SHIM_PATH}" "${STAGE_LIB_ROOT}/libglfw_hint_shim.so"
 
-sync_glob "${USR_LOCAL_PREFIX}/lib/libgtsam.so*" "${USR_LOCAL_ROOT}/lib"
-sync_glob "${USR_LOCAL_PREFIX}/lib/libgtsam_unstable.so*" "${USR_LOCAL_ROOT}/lib"
-sync_glob "${USR_LOCAL_PREFIX}/lib/libmetis-gtsam.so*" "${USR_LOCAL_ROOT}/lib"
-sync_glob "${USR_LOCAL_PREFIX}/lib/libiridescence.so*" "${USR_LOCAL_ROOT}/lib"
-sync_glob "${USR_LOCAL_PREFIX}/lib/libceres.so*" "${USR_LOCAL_ROOT}/lib"
-sync_tree "${USR_LOCAL_PREFIX}/share/iridescence" "${USR_LOCAL_ROOT}/share/iridescence"
+sync_glob "${USR_LOCAL_PREFIX}/lib/libgtsam.so*" "${STAGE_USR_ROOT}/lib"
+sync_glob "${USR_LOCAL_PREFIX}/lib/libgtsam_unstable.so*" "${STAGE_USR_ROOT}/lib"
+sync_glob "${USR_LOCAL_PREFIX}/lib/libmetis-gtsam.so*" "${STAGE_USR_ROOT}/lib"
+sync_glob "${USR_LOCAL_PREFIX}/lib/libiridescence.so*" "${STAGE_USR_ROOT}/lib"
+sync_glob "${USR_LOCAL_PREFIX}/lib/libceres.so*" "${STAGE_USR_ROOT}/lib"
+sync_tree "${USR_LOCAL_PREFIX}/share/iridescence" "${STAGE_USR_ROOT}/share/iridescence"
 patch_container_shell_scripts
 
-echo "[done] synced WSL runtime artifacts into ${CONTEXT_ROOT}"
+echo "[done] synced WSL runtime artifacts into ${RT_ROOT}"
