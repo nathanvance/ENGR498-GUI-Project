@@ -1,0 +1,8 @@
+{
+  "timing": {
+    "preprocess_camera_offset_enabled": false,
+    "preprocess_camera_offset_sec": 0.0,
+    "fusion_time_offset_enabled": false,
+    "fusion_time_offset_sec": 0.0
+  }
+}

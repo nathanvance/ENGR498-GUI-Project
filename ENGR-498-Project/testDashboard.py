@@ -1,26 +1,54 @@
 import json
 import os
+import subprocess
 import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
 
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QStackedWidget, QToolBar
 
 from calibration_bridge import CALIBRATION_OUTPUT_ROOT, newest_calibration_run, resolve_calibration_run
-from gui_pipeline import BackendPipelineThread, CalibrationWorkflowThread, LeafletServerManager
-from project_paths import ASSETS_DIR
+from gui_pipeline import (
+    BackendPipelineThread,
+    CalibrationPreflightThread,
+    CalibrationWorkflowThread,
+    LeafletServerManager,
+)
+from project_paths import ASSETS_DIR, PROJECT_ROOT
 from scan_metadata import (
     ensure_scan_structure,
+    first_existing_artifact,
     load_scan_metadata,
     relativize_for_scan,
     resolve_artifact_paths,
     resolve_scan_path,
     save_scan_metadata,
 )
+from timing_settings import load_global_timing_settings, save_global_timing_settings
 from views.calibration_mode import CalibrationModeView
 from views.lidar_dashboard import DashboardView
-from views.lidar_dashboard_stepbystep import StepByStepDashboard
+from views.lidar_dashboard_stepbystep import GlobalTimingSettingsDialog, StepByStepDashboard
+
+
+class ScanImportThread(QThread):
+    completed = Signal(str, str, str)  # scan_name, bag_filename, destination
+    failed = Signal(str, str)  # scan_name, message
+
+    def __init__(self, scan_name: str, source_bag: str | Path, destination_bag: str | Path, parent=None):
+        super().__init__(parent)
+        self.scan_name = scan_name
+        self.source_bag = Path(source_bag)
+        self.destination_bag = Path(destination_bag)
+
+    def run(self) -> None:
+        try:
+            self.destination_bag.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(self.source_bag, self.destination_bag)
+            self.completed.emit(self.scan_name, self.source_bag.name, str(self.destination_bag))
+        except Exception as exc:  # pragma: no cover - GUI-facing error path
+            self.failed.emit(self.scan_name, str(exc))
 
 
 class DashboardTestWindow(QMainWindow):
@@ -32,6 +60,8 @@ class DashboardTestWindow(QMainWindow):
         self._leaflet_manager = LeafletServerManager()
         self._pipeline_thread: BackendPipelineThread | None = None
         self._calibration_thread: CalibrationWorkflowThread | None = None
+        self._calibration_preflight_thread: CalibrationPreflightThread | None = None
+        self._scan_import_thread: ScanImportThread | None = None
         self._previous_widget = None
 
         self.setup_demo_assets()
@@ -67,6 +97,18 @@ class DashboardTestWindow(QMainWindow):
         calibration = toolbar.addAction("Calibration Mode")
         calibration.triggered.connect(lambda: self.switch_to(self.calibration_view))
 
+        timing = toolbar.addAction("Timing Calibration")
+        timing.triggered.connect(self.open_global_timing_dialog)
+
+    def open_global_timing_dialog(self):
+        settings = load_global_timing_settings()
+        dialog = GlobalTimingSettingsDialog(current_timing=settings.get("timing", {}), parent=self)
+        if dialog.exec():
+            settings["timing"] = dialog.get_timing_settings()
+            save_global_timing_settings(settings)
+            self.auto_dashboard.add_notification("Updated global timing calibration defaults", "done")
+            self.step_dashboard.add_notification("Updated global timing calibration defaults", "done")
+
     def _connect_signals(self):
         self.auto_dashboard.switchToStepModeRequested.connect(lambda: self.switch_to(self.step_dashboard))
         self.step_dashboard.switchToAutoModeRequested.connect(lambda: self.switch_to(self.auto_dashboard))
@@ -81,12 +123,17 @@ class DashboardTestWindow(QMainWindow):
 
         self.auto_dashboard.openViewerRequested.connect(self.open_semantic_viewer)
         self.step_dashboard.openViewerRequested.connect(self.open_semantic_viewer)
+        self.auto_dashboard.openSlamPointCloudRequested.connect(self.open_pose_recovery_point_cloud)
+        self.step_dashboard.openSlamPointCloudRequested.connect(self.open_pose_recovery_point_cloud)
+        self.auto_dashboard.openImagesFolderRequested.connect(self.open_images_folder)
+        self.step_dashboard.openImagesFolderRequested.connect(self.open_images_folder)
 
         self.auto_dashboard.openMapRequested.connect(self.open_map_for_scan)
         self.step_dashboard.openMapRequested.connect(self.open_map_for_scan)
 
         self.step_dashboard.openFilterViewerRequested.connect(self.open_filter_viewer)
         self.calibration_view.runCalibrationRequested.connect(self.run_calibration_workflow)
+        self.calibration_view.checkRequirementsRequested.connect(self.run_calibration_requirements_check)
 
     def _get_filter_viewer(self):
         if self.filter_viewer is None:
@@ -124,41 +171,32 @@ class DashboardTestWindow(QMainWindow):
 
     def setup_demo_assets(self):
         ASSETS_DIR.mkdir(exist_ok=True)
-        if any(path.is_dir() for path in ASSETS_DIR.iterdir()):
-            for scan_dir in ASSETS_DIR.iterdir():
-                if scan_dir.is_dir():
-                    try:
-                        scan_path, metadata = load_scan_metadata(scan_dir)
-                        save_scan_metadata(scan_path, metadata)
-                    except Exception:
-                        pass
-            return
-
-        for index in (1, 2, 3):
-            scan_name = f"scan_{index:03d}"
-            scan_dir = ASSETS_DIR / scan_name
-            ensure_scan_structure(scan_dir)
-            metadata = {
-                "name": scan_name,
-                "created_at": datetime.now().strftime("%Y-%m-%d"),
-                "status": {
-                    "slam": "pending",
-                    "filtering": "pending",
-                    "flai": "pending",
-                    "wire_extraction": "pending",
-                    "inference": "pending",
-                    "fusion": "pending",
-                },
-                "files": {},
-                "notes": "Add a rosbag under raw/, complete calibration mode separately, then run post-processing.",
-            }
-            save_scan_metadata(scan_dir, metadata)
+        for scan_dir in ASSETS_DIR.iterdir():
+            if scan_dir.is_dir():
+                try:
+                    scan_path, metadata = load_scan_metadata(scan_dir)
+                    save_scan_metadata(scan_path, metadata)
+                except Exception:
+                    pass
 
     def refresh_dashboards(self):
         self.auto_dashboard.refresh_scans()
         self.step_dashboard.refresh_scans()
 
+    def refresh_dashboards_for_scan(self, scan_name: str | None = None):
+        self.refresh_dashboards()
+        if scan_name:
+            self.auto_dashboard.select_scan(scan_name)
+            self.step_dashboard.select_scan(scan_name)
+
+    def _scan_import_running(self) -> bool:
+        return self._scan_import_thread is not None and self._scan_import_thread.isRunning()
+
     def create_new_scan(self):
+        if self._scan_import_running():
+            QMessageBox.information(self, "Scan Import Busy", "A rosbag import is already running.")
+            return
+
         bag_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select Rosbag File",
@@ -183,24 +221,49 @@ class DashboardTestWindow(QMainWindow):
 
         bag_filename = os.path.basename(bag_path)
         destination_bag = scan_dir / "raw" / bag_filename
-        shutil.copy2(bag_path, destination_bag)
 
         metadata = {
             "name": scan_name,
             "created_at": datetime.now().strftime("%Y-%m-%d"),
-            "notes": "",
-            "files": {
-                "rosbag": "raw/" + bag_filename,
-            },
+            "notes": f"Importing rosbag: {bag_filename}",
+            "files": {},
         }
         save_scan_metadata(scan_dir, metadata)
+        self.refresh_dashboards_for_scan(scan_name)
+        self.auto_dashboard.add_notification(f"Importing {bag_filename} into {scan_name}", "running")
+        self.step_dashboard.add_notification(f"Importing {bag_filename} into {scan_name}", "running")
+        self.auto_dashboard.status_label.setText(f"Importing {scan_name}...")
+        self.step_dashboard.status_label.setText(f"Importing {scan_name}...")
 
+        self._scan_import_thread = ScanImportThread(scan_name, bag_path, destination_bag, parent=self)
+        self._scan_import_thread.completed.connect(self._on_scan_import_complete)
+        self._scan_import_thread.failed.connect(self._on_scan_import_failed)
+        self._scan_import_thread.start()
+
+    def _on_scan_import_complete(self, scan_name: str, bag_filename: str, destination_bag: str):
+        scan_dir, metadata = load_scan_metadata(ASSETS_DIR / scan_name)
+        metadata["notes"] = ""
+        metadata.setdefault("files", {})
+        metadata["files"]["rosbag"] = f"raw/{bag_filename}"
+        save_scan_metadata(scan_dir, metadata)
+        self.refresh_dashboards_for_scan(scan_name)
+        self.auto_dashboard.add_notification(f"Created {scan_name}", "done")
+        self.step_dashboard.add_notification(f"Created {scan_name}", "done")
         QMessageBox.information(
             self,
             "Scan Created",
             f"Created {scan_name}\n\nRosbag copied to:\n{destination_bag}",
         )
+
+    def _on_scan_import_failed(self, scan_name: str, message: str):
+        try:
+            shutil.rmtree(ASSETS_DIR / scan_name)
+        except Exception:
+            pass
         self.refresh_dashboards()
+        self.auto_dashboard.add_notification(f"Failed to create {scan_name}", "error")
+        self.step_dashboard.add_notification(f"Failed to create {scan_name}", "error")
+        QMessageBox.warning(self, "Scan Import Failed", f"Failed to import rosbag for {scan_name}:\n{message}")
 
     def _prompt_for_file(self, title: str, pattern: str) -> str:
         chosen, _ = QFileDialog.getOpenFileName(self, title, "", pattern)
@@ -241,6 +304,10 @@ class DashboardTestWindow(QMainWindow):
         if self._pipeline_thread is not None and self._pipeline_thread.isRunning():
             QMessageBox.information(self, "Pipeline Busy", "A backend pipeline is already running.")
             return
+
+        self.auto_dashboard.clear_log()
+        self.step_dashboard.clear_log()
+        self._on_pipeline_log(f"[pipeline] Starting {mode} for {scan_dir.name}")
 
         self._pipeline_thread = BackendPipelineThread(scan_dir, mode=mode, parent=self)
         self._pipeline_thread.logLine.connect(self._on_pipeline_log)
@@ -289,12 +356,14 @@ class DashboardTestWindow(QMainWindow):
             return
 
         if step_key == "filtering":
-            files = resolve_artifact_paths(scan_dir, metadata)
-            for candidate_key in ("filtered", "las", "pcd"):
-                candidate = files.get(candidate_key)
-                if candidate is not None and candidate.exists():
-                    self.open_filter_viewer(str(candidate))
-                    return
+            _, candidate = first_existing_artifact(
+                scan_dir,
+                metadata,
+                ("filtered_las", "raw_las", "filtered_pcd", "raw_pcd", "las", "pcd"),
+            )
+            if candidate is not None:
+                self.open_filter_viewer(str(candidate))
+                return
             QMessageBox.information(
                 self,
                 "Filtering",
@@ -315,6 +384,8 @@ class DashboardTestWindow(QMainWindow):
 
     def _on_pipeline_log(self, line: str):
         if line:
+            self.auto_dashboard.append_log(line)
+            self.step_dashboard.append_log(line)
             print(line)
 
     def _on_pipeline_stage(self, step_key: str, status: str):
@@ -331,27 +402,131 @@ class DashboardTestWindow(QMainWindow):
         self.step_dashboard.status_label.setText(message)
         self.auto_dashboard.add_notification(message, "running" if status == "running" else "done")
         self.step_dashboard.add_notification(message, "running" if status == "running" else "done")
+        self._on_pipeline_log(f"[stage] {message}")
         self.refresh_dashboards()
 
-    def _on_pipeline_complete(self, scan_dir_str: str):
+    def _build_pipeline_output_summary(self, scan_dir: Path, mode: str) -> tuple[str, str]:
+        _, metadata = load_scan_metadata(scan_dir)
+        artifacts = resolve_artifact_paths(scan_dir, metadata)
+
+        def _add_path(lines: list[str], label: str, key: str):
+            path = artifacts.get(key)
+            if path is not None and path.exists():
+                lines.append(f"{label}: {path}")
+
+        lines: list[str] = []
+        title_by_mode = {
+            "pose-recovery": "Rosbag Preprocessing Complete",
+            "wire-extraction": "Wire Extraction Complete",
+            "inference": "Image Inference Complete",
+            "fusion": "Fusion + GPS Complete",
+            "full": "Full Backend Pipeline Complete",
+        }
+        title = title_by_mode.get(mode, "Pipeline Complete")
+
+        if mode == "pose-recovery":
+            _add_path(lines, "Pose recovery run", "latest_pose_recovery_run")
+            _add_path(lines, "Raw SLAM PCD", "raw_pcd")
+            _add_path(lines, "Raw SLAM LAS", "raw_las")
+            _add_path(lines, "Images folder", "images_dir")
+            _add_path(lines, "Image timestamps CSV", "image_timestamps_csv")
+            _add_path(lines, "Camera TF CSV", "tf_camera_csv")
+            _add_path(lines, "GPS TF CSV", "tf_gps_csv")
+        elif mode == "wire-extraction":
+            _add_path(lines, "Wire points", "wires_points")
+            _add_path(lines, "Wire info JSON", "wire_info")
+            _add_path(lines, "Ground points", "ground_points")
+            _add_path(lines, "Powerline overlay", "powerline_overlay")
+            _add_path(lines, "Georeferenced overlay", "georeferenced_powerline_overlay")
+        elif mode == "inference":
+            _add_path(lines, "Inference output", "yolo_output_dir")
+            _add_path(lines, "Annotated prediction images", "pred_images_dir")
+            _add_path(lines, "Masks directory", "masks_dir")
+            _add_path(lines, "Metadata directory", "meta_dir")
+        elif mode == "fusion":
+            _add_path(lines, "Fusion objects", "fused_objects")
+            _add_path(lines, "Fused semantic map", "fused_map")
+            _add_path(lines, "Pole spacing JSON", "pole_neighbor_distances")
+            _add_path(lines, "GPS alignment", "gps_alignment")
+            _add_path(lines, "Georeferenced objects", "georeferenced_objects")
+            _add_path(lines, "Georeferenced powerlines", "georeferenced_powerline_overlay")
+        else:
+            _add_path(lines, "Pose recovery run", "latest_pose_recovery_run")
+            _add_path(lines, "Raw SLAM PCD", "raw_pcd")
+            _add_path(lines, "Raw SLAM LAS", "raw_las")
+            _add_path(lines, "Filtered LAS", "filtered_las")
+            _add_path(lines, "Filtered PCD", "filtered_pcd")
+            _add_path(lines, "Images folder", "images_dir")
+            _add_path(lines, "Wire points", "wires_points")
+            _add_path(lines, "Inference output", "yolo_output_dir")
+            _add_path(lines, "Fusion objects", "fused_objects")
+            _add_path(lines, "Fused semantic map", "fused_map")
+            _add_path(lines, "Georeferenced objects", "georeferenced_objects")
+            _add_path(lines, "Georeferenced powerlines", "georeferenced_powerline_overlay")
+
+        if not lines:
+            lines.append(f"No output paths were recorded for {scan_dir.name}.")
+
+        summary = f"{title} for {scan_dir.name}\n\n" + "\n".join(lines)
+        return title, summary
+
+    def _on_pipeline_complete(self, scan_dir_str: str, mode: str):
         scan_dir = Path(scan_dir_str)
-        self.auto_dashboard.add_notification(f"Pipeline complete for {scan_dir.name}", "done")
-        self.step_dashboard.add_notification(f"Pipeline complete for {scan_dir.name}", "done")
+        title, summary = self._build_pipeline_output_summary(scan_dir, mode)
+        self.auto_dashboard.add_notification(f"{title} for {scan_dir.name}", "done")
+        self.step_dashboard.add_notification(f"{title} for {scan_dir.name}", "done")
         self.refresh_dashboards()
-        self.open_semantic_viewer(scan_dir)
+        self.auto_dashboard.status_label.setText(f"{title} for {scan_dir.name}")
+        self.step_dashboard.status_label.setText(f"{title} for {scan_dir.name}")
+        for line in summary.splitlines():
+            self._on_pipeline_log(line)
+        self._pipeline_thread = None
+        QMessageBox.information(self, title, summary)
 
     def _on_pipeline_failed(self, message: str):
         self.auto_dashboard.add_notification(message, "error")
         self.step_dashboard.add_notification(message, "error")
+        self._on_pipeline_log(f"[error] {message}")
         self.refresh_dashboards()
+        self._pipeline_thread = None
         QMessageBox.warning(self, "Pipeline", message)
 
+    def _calibration_job_running(self) -> bool:
+        return (
+            (self._calibration_thread is not None and self._calibration_thread.isRunning())
+            or (
+                self._calibration_preflight_thread is not None
+                and self._calibration_preflight_thread.isRunning()
+            )
+        )
+
+    def run_calibration_requirements_check(self):
+        if self._calibration_job_running():
+            QMessageBox.information(self, "Calibration Busy", "A calibration requirements check or workflow is already running.")
+            return
+
+        self.calibration_view.set_status("Checking calibration requirements...")
+        self.calibration_view.set_requirements_status(
+            "Checking WSL, Docker, WSLg, and hardware-backed OpenGL support...",
+            ok=None,
+        )
+        self.calibration_view.append_log("[preflight] Starting calibration requirements check...")
+        self._calibration_preflight_thread = CalibrationPreflightThread(parent=self)
+        self._calibration_preflight_thread.logLine.connect(self.calibration_view.append_log)
+        self._calibration_preflight_thread.completed.connect(self._on_calibration_requirements_complete)
+        self._calibration_preflight_thread.failed.connect(self._on_calibration_requirements_failed)
+        self._calibration_preflight_thread.start()
+
     def run_calibration_workflow(self, dataset_path: str, run_name: str, stop_after: str):
-        if self._calibration_thread is not None and self._calibration_thread.isRunning():
-            QMessageBox.information(self, "Calibration Busy", "A calibration workflow is already running.")
+        if self._calibration_job_running():
+            QMessageBox.information(self, "Calibration Busy", "A calibration requirements check or workflow is already running.")
             return
 
         self.calibration_view.set_status(f"Running calibration workflow: {run_name}")
+        self.calibration_view.set_requirements_status(
+            "Calibration launch will verify requirements before opening the calibration GUI.",
+            ok=None,
+        )
         self.calibration_view.append_log(f"[calibration] dataset={dataset_path}")
         self.calibration_view.append_log(f"[calibration] run_name={run_name}")
         self._calibration_thread = CalibrationWorkflowThread(
@@ -365,14 +540,29 @@ class DashboardTestWindow(QMainWindow):
         self._calibration_thread.failed.connect(self._on_calibration_failed)
         self._calibration_thread.start()
 
+    def _on_calibration_requirements_complete(self, summary: str):
+        self.calibration_view.set_status("Calibration requirements check passed")
+        self.calibration_view.set_requirements_status(summary, ok=True)
+
+    def _on_calibration_requirements_failed(self, message: str):
+        self.calibration_view.set_status("Calibration requirements check failed")
+        self.calibration_view.set_requirements_status(message, ok=False)
+        QMessageBox.warning(self, "Calibration Requirements", message)
+
     def _on_calibration_complete(self, run_name: str):
         self.calibration_view.set_status(f"Calibration workflow complete: {run_name}")
+        self.calibration_view.set_requirements_status(
+            "Calibration launch passed the hardware-backed OpenGL requirements check.",
+            ok=True,
+        )
         latest_run = newest_calibration_run()
         if latest_run is not None:
             self.calibration_view.append_log(f"[calibration] latest output: {latest_run}")
 
     def _on_calibration_failed(self, message: str):
         self.calibration_view.set_status("Calibration workflow failed")
+        if "requirements" in message.lower() or "opengl" in message.lower() or "software" in message.lower():
+            self.calibration_view.set_requirements_status(message, ok=False)
         self.calibration_view.append_log(message)
         QMessageBox.warning(self, "Calibration", message)
 
@@ -414,6 +604,37 @@ class DashboardTestWindow(QMainWindow):
         self.auto_dashboard.add_notification(f"Opened map for {scan_dir.name}", "info")
         self.step_dashboard.add_notification(f"Opened map for {scan_dir.name}", "info")
         print(f"Leaflet URL: {url}")
+
+    def open_pose_recovery_point_cloud(self, point_cloud_path: str):
+        point_cloud = Path(point_cloud_path)
+        if not point_cloud.is_file():
+            QMessageBox.information(self, "SLAM Point Cloud", "The requested SLAM point cloud does not exist yet.")
+            return
+
+        viewer_script = PROJECT_ROOT / "view_pcd_open3d.py"
+        if not viewer_script.is_file():
+            QMessageBox.warning(self, "SLAM Point Cloud", f"Viewer script not found:\n{viewer_script}")
+            return
+
+        subprocess.Popen([sys.executable, str(viewer_script), str(point_cloud)])
+        self.auto_dashboard.add_notification(f"Opened SLAM point cloud viewer for {point_cloud.name}", "info")
+        self.step_dashboard.add_notification(f"Opened SLAM point cloud viewer for {point_cloud.name}", "info")
+
+    def open_images_folder(self, images_dir_path: str):
+        images_dir = Path(images_dir_path)
+        if not images_dir.is_dir():
+            QMessageBox.information(self, "Images Folder", "The exported images folder does not exist yet.")
+            return
+
+        if os.name == "nt":
+            os.startfile(str(images_dir))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(images_dir)])
+        else:
+            subprocess.Popen(["xdg-open", str(images_dir)])
+
+        self.auto_dashboard.add_notification(f"Opened images folder for {images_dir.name}", "info")
+        self.step_dashboard.add_notification(f"Opened images folder for {images_dir.name}", "info")
 
 
 if __name__ == "__main__":

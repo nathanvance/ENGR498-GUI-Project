@@ -181,6 +181,13 @@ pretty_print_calib_json() {
   python3 -m json.tool "$json_path" | tee "$out_path"
 }
 
+snapshot_calib_json() {
+  local json_path="$1"
+  local snapshot_path="$2"
+  cp "$json_path" "$snapshot_path"
+  echo "[info] saved calibration snapshot: $snapshot_path"
+}
+
 assert_manual_result_present() {
   local json_path="$1"
   python3 - "$json_path" <<'PY'
@@ -479,10 +486,11 @@ MANUAL_RC=0
 run_with_shim rosrun direct_visual_lidar_calibration initial_guess_manual "$RUN_DIR" || MANUAL_RC=$?
 
 [[ -f "$RUN_DIR/calib.json" ]] || die "calib.json is missing after manual initial guess"
+snapshot_calib_json "$RUN_DIR/calib.json" "$RUN_DIR/calib_after_manual.json"
 pretty_print_calib_json "$RUN_DIR/calib.json" "$LOG_DIR/calib_after_manual.pretty.json"
 if assert_manual_result_present "$RUN_DIR/calib.json"; then
   if (( MANUAL_RC != 0 )); then
-    warn "Manual initial guess exited with code ${MANUAL_RC}, but init_T_lidar_camera was saved. Continuing."
+    warn "Manual initial guess exited with code ${MANUAL_RC}, but init_T_lidar_camera was saved to $RUN_DIR/calib.json. Continuing."
   fi
 else
   die "Manual initial guess was not saved. Click 'Save' in the manual viewer before closing it. Expected results.init_T_lidar_camera in $RUN_DIR/calib.json"
@@ -498,6 +506,7 @@ CALIBRATE_RC=0
 run_with_shim rosrun direct_visual_lidar_calibration calibrate "$RUN_DIR" || CALIBRATE_RC=$?
 
 [[ -f "$RUN_DIR/calib.json" ]] || die "calib.json is missing after calibration"
+snapshot_calib_json "$RUN_DIR/calib.json" "$RUN_DIR/calib_after_calibrate.json"
 pretty_print_calib_json "$RUN_DIR/calib.json" "$LOG_DIR/calib_after_calibrate.pretty.json"
 if assert_final_result_present "$RUN_DIR/calib.json"; then
   if (( CALIBRATE_RC != 0 )); then

@@ -76,7 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gps-to-lidar-offset-body", default="0,0,0")
     parser.add_argument("--gps-to-lidar-offset-json", default="")
     parser.add_argument("--min-fix-status", type=int, default=0)
-    parser.add_argument("--max-horizontal-cov-m2", type=float, default=100.0)
+    parser.add_argument("--max-horizontal-cov-m2", type=float, default=1000.0)
     parser.add_argument("--outlier-threshold-m", type=float, default=5.0)
     parser.add_argument("--allow-scale", action="store_true")
     parser.add_argument("--native-mode", choices=("auto", "on", "off"), default="auto")
@@ -261,7 +261,11 @@ def filter_records(records: list[GpsPoseRecord], *, min_fix_status: int, max_hor
                 continue
         filtered.append(record)
     if len(filtered) < 3:
-        raise ValueError("Need at least 3 valid GPS/TF rows after filtering")
+        raise ValueError(
+            f"Need at least 3 valid GPS/TF rows after filtering "
+            f"(kept {len(filtered)} of {len(records)}; "
+            f"min_fix_status={min_fix_status}, max_horizontal_cov_m2={max_horizontal_cov_m2})"
+        )
     return filtered
 
 

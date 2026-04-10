@@ -508,12 +508,21 @@ class SemanticViewer(QWidget):
         self.current_wire_params = dict(metadata.get("wire_params", {}))
 
         artifacts = resolve_artifact_paths(scan_dir, metadata)
-        base_cloud = (
-            artifacts.get("segmented")
-            or artifacts.get("filtered")
-            or artifacts.get("las")
-            or artifacts.get("pcd")
-            or Path(DEFAULT_LAS_PATH)
+        base_cloud = next(
+            (
+                candidate
+                for candidate in (
+                    artifacts.get("segmented"),
+                    artifacts.get("filtered_las"),
+                    artifacts.get("filtered_pcd"),
+                    artifacts.get("raw_las"),
+                    artifacts.get("raw_pcd"),
+                    artifacts.get("las"),
+                    artifacts.get("pcd"),
+                )
+                if candidate is not None and candidate.exists()
+            ),
+            Path(DEFAULT_LAS_PATH),
         )
         self.load_las_file(base_cloud)
 

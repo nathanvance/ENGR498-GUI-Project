@@ -16,6 +16,7 @@ from native.pointcloud_accel import ensure_built, project_assign_best_detection
 
 
 FUSION_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = FUSION_ROOT.parent
 DEFAULT_ALLOWED_CLASSES = (
     "pole",
     "crossarm",
@@ -90,6 +91,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--time-column", default="t_query_sec")
     parser.add_argument("--image-filename-column", default="filename")
     parser.add_argument("--image-time-column", default="")
+    parser.add_argument("--time-offset-enabled", action="store_true")
     parser.add_argument("--time-offset-sec", type=float, default=0.0)
     parser.add_argument("--allowed-classes", default=",".join(DEFAULT_ALLOWED_CLASSES))
     parser.add_argument("--reject-classes", default=",".join(DEFAULT_REJECT_CLASSES))
@@ -328,6 +330,92 @@ def match_nearest_pose_indices(frame_times: np.ndarray, pose_times: np.ndarray) 
     previous = np.clip(indices - 1, 0, pose_times.size - 1)
     choose_previous = np.abs(frame_times - pose_times[previous]) <= np.abs(frame_times - pose_times[indices])
     return np.where(choose_previous, previous, indices)
+
+
+def _normalize_quaternion_xyzw(quaternion: np.ndarray) -> np.ndarray:
+    norm = float(np.linalg.norm(quaternion))
+    if norm <= 0.0:
+        return np.asarray([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+    return quaternion / norm
+
+
+def _slerp_quaternion_xyzw(q0: np.ndarray, q1: np.ndarray, alpha: float) -> np.ndarray:
+    q0n = _normalize_quaternion_xyzw(q0.astype(np.float64, copy=False))
+    q1n = _normalize_quaternion_xyzw(q1.astype(np.float64, copy=False))
+    dot = float(np.dot(q0n, q1n))
+    if dot < 0.0:
+        q1n = -q1n
+        dot = -dot
+    dot = max(min(dot, 1.0), -1.0)
+
+    if dot > 0.9995:
+        blended = q0n + alpha * (q1n - q0n)
+        return _normalize_quaternion_xyzw(blended)
+
+    theta_0 = float(np.arccos(dot))
+    sin_theta_0 = float(np.sin(theta_0))
+    if abs(sin_theta_0) < 1e-10:
+        return _normalize_quaternion_xyzw(q0n)
+    theta = theta_0 * alpha
+    sin_theta = float(np.sin(theta))
+    s0 = float(np.sin(theta_0 - theta) / sin_theta_0)
+    s1 = float(sin_theta / sin_theta_0)
+    return _normalize_quaternion_xyzw((s0 * q0n) + (s1 * q1n))
+
+
+def interpolate_pose_record(
+    poses: list[PoseRecord],
+    pose_times: np.ndarray,
+    target_time: float,
+) -> tuple[PoseRecord | None, dict[str, Any]]:
+    if pose_times.size == 0:
+        return None, {"drop_reason": "no_valid_poses"}
+    if target_time < float(pose_times[0]) or target_time > float(pose_times[-1]):
+        return None, {"drop_reason": "effective_time_out_of_range"}
+
+    right = int(np.searchsorted(pose_times, target_time, side="left"))
+    if right <= 0:
+        idx = 0
+        return poses[idx], {"match_mode": "interpolated", "pose_index_lo": idx, "pose_index_hi": idx}
+    if right >= pose_times.size:
+        idx = int(pose_times.size - 1)
+        return poses[idx], {"match_mode": "interpolated", "pose_index_lo": idx, "pose_index_hi": idx}
+
+    left = right - 1
+    t0 = float(pose_times[left])
+    t1 = float(pose_times[right])
+    if t1 <= t0:
+        return None, {"drop_reason": "invalid_pose_bracket"}
+    alpha = float((target_time - t0) / (t1 - t0))
+    alpha = max(0.0, min(1.0, alpha))
+
+    p0 = poses[left]
+    p1 = poses[right]
+    translation = (1.0 - alpha) * p0.translation + alpha * p1.translation
+    quaternion = _slerp_quaternion_xyzw(p0.quaternion_xyzw, p1.quaternion_xyzw, alpha)
+    return (
+        PoseRecord(
+            timestamp=float(target_time),
+            translation=translation.astype(np.float64),
+            quaternion_xyzw=quaternion.astype(np.float64),
+            raw={
+                "interpolated": True,
+                "t0": t0,
+                "t1": t1,
+                "alpha": alpha,
+                "pose_index_lo": left,
+                "pose_index_hi": right,
+            },
+        ),
+        {
+            "match_mode": "interpolated",
+            "pose_index_lo": left,
+            "pose_index_hi": right,
+            "pose_time_lo": t0,
+            "pose_time_hi": t1,
+            "interp_alpha": alpha,
+        },
+    )
 
 
 def sanitize_masks(mask_array: np.ndarray) -> np.ndarray:
@@ -875,6 +963,14 @@ def save_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def to_web_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return "/" + resolved.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return resolved.as_posix()
+
+
 def main() -> int:
     args = parse_args()
     ensure_built()
@@ -892,9 +988,30 @@ def main() -> int:
     )
     frames = build_frame_records(Path(args.mask_dir), Path(args.meta_dir), image_timestamps)
 
-    frame_times = np.asarray([frame.timestamp + args.time_offset_sec for frame in frames], dtype=np.float64)
     pose_times = np.asarray([pose.timestamp for pose in poses], dtype=np.float64)
-    pose_matches = match_nearest_pose_indices(frame_times, pose_times)
+    if args.time_offset_enabled:
+        frame_times = np.asarray([frame.timestamp + args.time_offset_sec for frame in frames], dtype=np.float64)
+        frame_pose_records: list[PoseRecord | None] = []
+        frame_match_details: list[dict[str, Any]] = []
+        for frame_index, frame in enumerate(frames):
+            pose_record, details = interpolate_pose_record(poses, pose_times, float(frame_times[frame_index]))
+            frame_pose_records.append(pose_record)
+            frame_match_details.append(details)
+    else:
+        frame_times = np.asarray([frame.timestamp for frame in frames], dtype=np.float64)
+        pose_matches = match_nearest_pose_indices(frame_times, pose_times)
+        frame_pose_records = [poses[int(index)] for index in pose_matches]
+        frame_match_details = [
+            {
+                "match_mode": "nearest",
+                "pose_index_lo": int(index),
+                "pose_index_hi": int(index),
+                "pose_time_lo": float(poses[int(index)].timestamp),
+                "pose_time_hi": float(poses[int(index)].timestamp),
+                "interp_alpha": 0.0,
+            }
+            for index in pose_matches
+        ]
 
     point_cloud = o3d.io.read_point_cloud(str(Path(args.point_cloud)))
     if point_cloud.is_empty():
@@ -914,11 +1031,35 @@ def main() -> int:
     winner_class = np.full(num_points, -1, dtype=np.int32)
     camera_geometries: list[o3d.geometry.Geometry] = []
     used_frames: list[dict[str, Any]] = []
+    detection_evidence: list[dict[str, Any]] = []
 
     camera_to_lidar = invert_transform(lidar_to_camera)
 
     for frame_index, frame in enumerate(frames):
-        pose = poses[int(pose_matches[frame_index])]
+        pose = frame_pose_records[frame_index]
+        match_details = frame_match_details[frame_index]
+        frame_match_record: dict[str, Any] = {
+            "frame": frame.image_name,
+            "frame_timestamp": float(frame.timestamp),
+            "effective_frame_timestamp": float(frame_times[frame_index]),
+            "match_mode": str(match_details.get("match_mode", "nearest")),
+            "matched_pose_timestamp": float(pose.timestamp) if pose is not None else None,
+            "matched_pose_index": int(match_details.get("pose_index_lo", -1)),
+            "pose_index_lo": int(match_details.get("pose_index_lo", -1)),
+            "pose_index_hi": int(match_details.get("pose_index_hi", -1)),
+            "pose_time_lo": match_details.get("pose_time_lo"),
+            "pose_time_hi": match_details.get("pose_time_hi"),
+            "interp_alpha": match_details.get("interp_alpha"),
+            "num_labeled_points": 0,
+            "dropped": False,
+            "drop_reason": "",
+        }
+        if pose is None:
+            frame_match_record["dropped"] = True
+            frame_match_record["drop_reason"] = str(match_details.get("drop_reason", "pose_unavailable"))
+            used_frames.append(frame_match_record)
+            continue
+
         lidar_to_map = transform_from_pose(pose)
         map_to_lidar = invert_transform(lidar_to_map)
         camera_to_map = lidar_to_map @ camera_to_lidar
@@ -959,6 +1100,8 @@ def main() -> int:
 
         if not np.any(allowed):
             print(f"[info] {frame.stem}: no allowed detections")
+            frame_match_record["drop_reason"] = "no_allowed_detections"
+            used_frames.append(frame_match_record)
             continue
 
         detection_index, detection_confidence = project_assign_best_detection(
@@ -980,6 +1123,8 @@ def main() -> int:
         labeled_points = detection_index >= 0
         if not np.any(labeled_points):
             print(f"[info] {frame.stem}: no map points landed inside allowed masks")
+            frame_match_record["drop_reason"] = "no_projected_points"
+            used_frames.append(frame_match_record)
             continue
 
         for det_id in np.unique(detection_index[labeled_points]):
@@ -1001,7 +1146,46 @@ def main() -> int:
         labeled_points = np.where(detection_index >= 0)[0]
         if labeled_points.size == 0:
             print(f"[info] {frame.stem}: dense cluster filtering removed all labels")
+            frame_match_record["drop_reason"] = "all_labels_removed_after_dense_filter"
+            used_frames.append(frame_match_record)
             continue
+
+        pred_image_path = Path(args.mask_dir).resolve().parent / "pred_images" / frame.image_name
+        source_image_path = None
+        if isinstance(meta.get("source_image"), str) and meta.get("source_image"):
+            source_image_path = Path(str(meta["source_image"])).resolve()
+        else:
+            source_image_path = frame.meta_path.resolve().parents[2] / "pose_recovery"
+
+        for det_id in np.unique(detection_index[labeled_points]):
+            det_global_points = np.where(detection_index == det_id)[0]
+            if det_global_points.size == 0:
+                continue
+            det_id_int = int(det_id)
+            detection_meta = next(
+                (
+                    item
+                    for item in detections
+                    if int(item.get("instance_index", -1)) == det_id_int
+                ),
+                None,
+            )
+            if detection_meta is None:
+                continue
+            detection_evidence.append(
+                {
+                    "frame_name": frame.image_name,
+                    "frame_timestamp": float(frame.timestamp),
+                    "class_name": str(detection_meta.get("class_name", "")).strip().lower(),
+                    "confidence": float(detection_meta.get("confidence", 0.0)),
+                    "detection_box_xyxy": [
+                        float(value) for value in detection_meta.get("box_xyxy", [])
+                    ],
+                    "raw_image_url": to_web_path(source_image_path),
+                    "pred_image_url": to_web_path(pred_image_path),
+                    "point_indices": det_global_points.astype(np.int32, copy=True),
+                }
+            )
 
         vote_count[labeled_points] = np.minimum(
             vote_count[labeled_points].astype(np.uint32) + 1,
@@ -1014,15 +1198,8 @@ def main() -> int:
         winner_class[better_points] = local_class_indices[better]
         best_conf[better_points] = detection_confidence[better_points]
 
-        used_frames.append(
-            {
-                "frame": frame.image_name,
-                "frame_timestamp": frame.timestamp,
-                "matched_pose_timestamp": pose.timestamp,
-                "matched_pose_index": int(pose_matches[frame_index]),
-                "num_labeled_points": int(labeled_points.size),
-            }
-        )
+        frame_match_record["num_labeled_points"] = int(labeled_points.size)
+        used_frames.append(frame_match_record)
         print(
             f"[info] {frame.image_name}: matched pose {pose.timestamp:.6f}, "
             f"kept {labeled_points.size:,} projected points"
@@ -1096,9 +1273,38 @@ def main() -> int:
 
     combined_objects: list[dict[str, Any]] = []
     for instance in instances:
+        gallery_frames: list[dict[str, Any]] = []
+        instance_id = int(instance["instance_number"])
+        instance_point_indices = instance["point_indices"]
+        instance_name = instance["name"]
+        for evidence in detection_evidence:
+            if evidence["class_name"] != instance["class_name"]:
+                continue
+            evidence_points = evidence["point_indices"]
+            overlapping_object_points = int(
+                np.count_nonzero(final_instance_index[evidence_points] == instance_id - 1)
+            )
+            if overlapping_object_points < 10:
+                continue
+            gallery_frames.append(
+                {
+                    "frame_name": evidence["frame_name"],
+                    "timestamp": evidence["frame_timestamp"],
+                    "raw_image_url": evidence["raw_image_url"],
+                    "pred_image_url": evidence["pred_image_url"],
+                    "detection_box_xyxy": evidence["detection_box_xyxy"],
+                    "class_name": evidence["class_name"],
+                    "confidence": evidence["confidence"],
+                    "support_point_count": overlapping_object_points,
+                    "support_fraction": float(overlapping_object_points / max(1, instance["num_points"])),
+                }
+            )
+        gallery_frames.sort(
+            key=lambda item: (-item["support_point_count"], -item["confidence"], item["frame_name"])
+        )
         combined_objects.append(
             {
-                "object_name": instance["name"],
+                "object_name": instance_name,
                 "class_name": instance["class_name"],
                 "instance_number": int(instance["instance_number"]),
                 "confidence_score": float(instance["mean_confidence"]),
@@ -1108,6 +1314,11 @@ def main() -> int:
                 "bbox_aabb_max_xyz": [float(value) for value in instance["bbox_max"]],
                 "class_color_rgb": instance["class_color_rgb"],
                 "gps": {"lat": None, "lon": None, "alt": None},
+                "image_gallery": {
+                    "default_mode": "predicted",
+                    "total_frames": len(gallery_frames),
+                    "frames": gallery_frames,
+                },
             }
         )
 
@@ -1124,6 +1335,7 @@ def main() -> int:
         },
         "settings": {
             "time_column": args.time_column,
+            "time_offset_enabled": bool(args.time_offset_enabled),
             "time_offset_sec": args.time_offset_sec,
             "allowed_classes": list(allowed_classes),
             "reject_classes": list(reject_classes),
@@ -1142,6 +1354,7 @@ def main() -> int:
         "summary": {
             "num_input_points": int(num_points),
             "num_frames_used": len(used_frames),
+            "num_frames_dropped": int(sum(1 for item in used_frames if bool(item.get("dropped")))),
             "num_objects": len(combined_objects),
             "num_pole_distance_links": len(pole_distances),
         },

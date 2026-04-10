@@ -67,9 +67,11 @@ The GUI supports two major modes:
 
 - Calibration mode
   - runs direct visual LiDAR calibration in Docker
+  - requires hardware-backed OpenGL through WSLg
   - extracts camera intrinsics from `/camera/camera_info`
   - solves the LiDAR-camera extrinsic transform
   - produces calibration artifacts later consumed by Fusion
+  - includes a GUI `Check Requirements` action before first use on a machine
 - Post-processing mode
   - available in both Auto mode and Step-by-step mode
   - consumes a completed calibration run as an upstream dependency
@@ -118,7 +120,11 @@ Required for `rosbag_preprocessing/`:
 Required for calibration GUIs inside Docker:
 
 - WSLg
-- working OpenGL / GPU acceleration through WSLg
+- working hardware-backed OpenGL / GPU acceleration through WSLg
+
+Not supported for calibration on Windows:
+
+- software OpenGL rendering
 
 
 ## Windows Python Environment Setup
@@ -205,6 +211,19 @@ LiDAR calibration, and writes a calibration run under:
 rosbag_preprocessing/outputs/calibration/
 ```
 
+Before the first calibration run on a machine, either:
+
+- click `Check Requirements` in the Calibration Mode GUI, or
+- run:
+
+```powershell
+python .\rosbag_preprocessing\launcher\run_calibration_workflow.py --check-only
+```
+
+That check verifies WSL, Docker, WSLg, and that the calibration container is
+actually using a hardware-backed OpenGL renderer. If it reports software
+rendering, do not proceed with calibration on that machine.
+
 ### 4. Run rosbag preprocessing
 
 Outputs land under:
@@ -220,6 +239,15 @@ The pose-recovery workflow produces:
 - `tf_camera_out.csv`
 - `tf_gps_out.csv`
 - `pcd/scans.pcd`
+
+The integrated dashboard also stages those raw point-cloud artifacts under the
+scan folder as:
+
+- `processed/point_clouds/scans.pcd`
+- `processed/point_clouds/cloud.las`
+- optional filtered outputs:
+  - `processed/point_clouds/scans_filtered.pcd`
+  - `processed/point_clouds/cloud_filtered.las`
 
 When launched from the integrated dashboard, the pose-recovery results are
 written into the selected scan folder under:
@@ -279,7 +307,8 @@ From `ENGR-498-Project/`:
 Recommended usage:
 
 1. Use Calibration Mode to complete direct visual LiDAR calibration for the
-   dataset and produce calibration outputs.
+   dataset and produce calibration outputs. Run `Check Requirements` first on a
+   new machine.
 2. Create a scan from the dashboard.
 3. Select the scan.
 4. Use either:

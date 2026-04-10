@@ -16,7 +16,14 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
 
-from scan_metadata import load_scan_metadata, relativize_for_scan, resolve_scan_path, save_scan_metadata
+from scan_metadata import (
+    first_existing_artifact,
+    load_scan_metadata,
+    relativize_for_scan,
+    resolve_scan_path,
+    save_scan_metadata,
+)
+from timing_settings import load_global_timing_settings, save_global_timing_settings, resolve_effective_timing
 
 
 class WireParametersDialog(QDialog):
@@ -275,12 +282,25 @@ class InferenceParametersDialog(QDialog):
 class FusionParametersDialog(QDialog):
     """Link a completed calibration run and GPS settings."""
 
-    def __init__(self, fusion_config=None, gps_config=None, scan_dir: Path | None = None, parent=None):
+    def __init__(
+        self,
+        fusion_config=None,
+        gps_config=None,
+        timing_overrides=None,
+        effective_timing=None,
+        scan_dir: Path | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Calibration Link and GPS Mapping")
         self.setMinimumWidth(700)
         self.scan_dir = scan_dir
-        self._setup_ui(fusion_config or {}, gps_config or {})
+        self._setup_ui(
+            fusion_config or {},
+            gps_config or {},
+            timing_overrides or {},
+            effective_timing or {},
+        )
 
     def _browse_directory(self, target_edit: QLineEdit, title: str):
         chosen = QFileDialog.getExistingDirectory(
@@ -291,7 +311,7 @@ class FusionParametersDialog(QDialog):
         if chosen:
             target_edit.setText(chosen)
 
-    def _setup_ui(self, fusion_config, gps_config):
+    def _setup_ui(self, fusion_config, gps_config, timing_overrides, effective_timing):
         layout = QVBoxLayout()
         self.setLayout(layout)
 
@@ -323,6 +343,53 @@ class FusionParametersDialog(QDialog):
         self.gps_offset_edit = QLineEdit(str(gps_config.get("offset_body_xyz_m", "0,0,0")))
         form.addRow("GPS->LiDAR Offset (x,y,z m):", self.gps_offset_edit)
 
+        timing_title = QLabel("Timing Calibration Overrides (per scan)")
+        timing_title.setStyleSheet("font-weight: bold; color: #1f3a5f; margin-top: 6px;")
+        layout.addWidget(timing_title)
+
+        self.override_preprocess_cb = QCheckBox("Override preprocessing camera offset")
+        self.override_preprocess_cb.setChecked("preprocess_camera_offset_sec" in timing_overrides or "preprocess_camera_offset_enabled" in timing_overrides)
+        layout.addWidget(self.override_preprocess_cb)
+
+        self.preprocess_enabled_cb = QCheckBox("Enable preprocessing camera offset")
+        self.preprocess_enabled_cb.setChecked(bool(timing_overrides.get("preprocess_camera_offset_enabled", effective_timing.get("preprocess_camera_offset_enabled", False))))
+        layout.addWidget(self.preprocess_enabled_cb)
+
+        self.preprocess_offset_ms = QDoubleSpinBox()
+        self.preprocess_offset_ms.setRange(-5000.0, 5000.0)
+        self.preprocess_offset_ms.setDecimals(3)
+        self.preprocess_offset_ms.setSingleStep(0.5)
+        self.preprocess_offset_ms.setSuffix(" ms")
+        self.preprocess_offset_ms.setValue(
+            float(timing_overrides.get("preprocess_camera_offset_sec", effective_timing.get("preprocess_camera_offset_sec", 0.0))) * 1000.0
+        )
+        form.addRow("Preprocess Offset:", self.preprocess_offset_ms)
+
+        self.override_fusion_cb = QCheckBox("Override Fusion interpolation offset")
+        self.override_fusion_cb.setChecked("fusion_time_offset_sec" in timing_overrides or "fusion_time_offset_enabled" in timing_overrides)
+        layout.addWidget(self.override_fusion_cb)
+
+        self.fusion_enabled_cb = QCheckBox("Enable Fusion time offset interpolation")
+        self.fusion_enabled_cb.setChecked(bool(timing_overrides.get("fusion_time_offset_enabled", effective_timing.get("fusion_time_offset_enabled", False))))
+        layout.addWidget(self.fusion_enabled_cb)
+
+        self.fusion_offset_ms = QDoubleSpinBox()
+        self.fusion_offset_ms.setRange(-5000.0, 5000.0)
+        self.fusion_offset_ms.setDecimals(3)
+        self.fusion_offset_ms.setSingleStep(0.5)
+        self.fusion_offset_ms.setSuffix(" ms")
+        self.fusion_offset_ms.setValue(
+            float(timing_overrides.get("fusion_time_offset_sec", effective_timing.get("fusion_time_offset_sec", 0.0))) * 1000.0
+        )
+        form.addRow("Fusion Offset:", self.fusion_offset_ms)
+
+        effective_label = QLabel(
+            "Unset overrides inherit the global Timing Calibration defaults from the top toolbar control."
+        )
+        effective_label.setWordWrap(True)
+        effective_label.setStyleSheet("color: #4b5563; background-color: #eef4ff; padding: 8px; border-radius: 4px;")
+        layout.addWidget(effective_label)
+
         layout.addLayout(form)
 
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -341,7 +408,78 @@ class FusionParametersDialog(QDialog):
         gps_config = {
             "offset_body_xyz_m": self.gps_offset_edit.text().strip() or "0,0,0",
         }
-        return fusion_config, gps_config
+        timing_overrides = {}
+        if self.override_preprocess_cb.isChecked():
+            timing_overrides["preprocess_camera_offset_enabled"] = bool(self.preprocess_enabled_cb.isChecked())
+            timing_overrides["preprocess_camera_offset_sec"] = float(self.preprocess_offset_ms.value()) / 1000.0
+        if self.override_fusion_cb.isChecked():
+            timing_overrides["fusion_time_offset_enabled"] = bool(self.fusion_enabled_cb.isChecked())
+            timing_overrides["fusion_time_offset_sec"] = float(self.fusion_offset_ms.value()) / 1000.0
+        return fusion_config, gps_config, timing_overrides
+
+
+class GlobalTimingSettingsDialog(QDialog):
+    def __init__(self, current_timing=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Global Timing Calibration")
+        self.setMinimumWidth(560)
+        self._setup_ui(current_timing or {})
+
+    def _setup_ui(self, current_timing):
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        title = QLabel("Global Timing Calibration Defaults")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #1f3a5f; margin-bottom: 10px;")
+        layout.addWidget(title)
+
+        description = QLabel(
+            "These defaults apply to every scan unless that scan sets explicit timing overrides. "
+            "Values are shown in milliseconds but stored in seconds."
+        )
+        description.setWordWrap(True)
+        description.setStyleSheet("color: #4b5563; background-color: #eef8ef; padding: 8px; border-radius: 4px;")
+        layout.addWidget(description)
+
+        form = QFormLayout()
+
+        self.preprocess_enabled_cb = QCheckBox("Enable preprocessing camera offset")
+        self.preprocess_enabled_cb.setChecked(bool(current_timing.get("preprocess_camera_offset_enabled", False)))
+        form.addRow(self.preprocess_enabled_cb)
+
+        self.preprocess_offset_ms = QDoubleSpinBox()
+        self.preprocess_offset_ms.setRange(-5000.0, 5000.0)
+        self.preprocess_offset_ms.setDecimals(3)
+        self.preprocess_offset_ms.setSingleStep(0.5)
+        self.preprocess_offset_ms.setSuffix(" ms")
+        self.preprocess_offset_ms.setValue(float(current_timing.get("preprocess_camera_offset_sec", 0.0)) * 1000.0)
+        form.addRow("Default Preprocess Offset:", self.preprocess_offset_ms)
+
+        self.fusion_enabled_cb = QCheckBox("Enable Fusion offset interpolation")
+        self.fusion_enabled_cb.setChecked(bool(current_timing.get("fusion_time_offset_enabled", False)))
+        form.addRow(self.fusion_enabled_cb)
+
+        self.fusion_offset_ms = QDoubleSpinBox()
+        self.fusion_offset_ms.setRange(-5000.0, 5000.0)
+        self.fusion_offset_ms.setDecimals(3)
+        self.fusion_offset_ms.setSingleStep(0.5)
+        self.fusion_offset_ms.setSuffix(" ms")
+        self.fusion_offset_ms.setValue(float(current_timing.get("fusion_time_offset_sec", 0.0)) * 1000.0)
+        form.addRow("Default Fusion Offset:", self.fusion_offset_ms)
+
+        layout.addLayout(form)
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def get_timing_settings(self):
+        return {
+            "preprocess_camera_offset_enabled": bool(self.preprocess_enabled_cb.isChecked()),
+            "preprocess_camera_offset_sec": float(self.preprocess_offset_ms.value()) / 1000.0,
+            "fusion_time_offset_enabled": bool(self.fusion_enabled_cb.isChecked()),
+            "fusion_time_offset_sec": float(self.fusion_offset_ms.value()) / 1000.0,
+        }
 
 
 class NotificationPanel(QWidget):
@@ -457,6 +595,8 @@ class StepByStepDashboard(QWidget):
     createScanRequested = Signal()
     switchToAutoModeRequested = Signal()  # Switch back to auto mode
     openFilterViewerRequested = Signal(str)  # Open the point cloud filter viewer
+    openSlamPointCloudRequested = Signal(str)  # point_cloud_path
+    openImagesFolderRequested = Signal(str)  # images_dir_path
     
     STEP_COLUMNS = {
         "Rosbag Preprocessing": "slam",
@@ -470,9 +610,9 @@ class StepByStepDashboard(QWidget):
     STEP_DETAILS = {
         "slam": {
             "title": "Rosbag Preprocessing",
-            "summary": "Replays the rosbag in Docker, runs FAST-LIO SLAM, writes scans.pcd, exports JPG frames from /image/compressed, and samples both tf_camera_out.csv and tf_gps_out.csv using message timestamps.",
+            "summary": "Replays the rosbag in Docker, runs FAST-LIO SLAM, copies the raw map into processed/point_clouds as PCD plus LAS, exports JPG frames from /image/compressed, and samples both tf_camera_out.csv and tf_gps_out.csv using message timestamps.",
             "run_tooltip": "Run the full rosbag preprocessing stage: FAST-LIO SLAM, JPG export, image timestamp CSV export, and camera/GPS TF sampling.",
-            "view_tooltip": "Open the semantic viewer for this scan using the latest outputs generated so far.",
+            "view_tooltip": "Open the latest SLAM point cloud from rosbag preprocessing in the Open3D viewer.",
             "modify_label": "Details",
             "modify_tooltip": "Show exactly what rosbag preprocessing does and which files it produces.",
         },
@@ -517,6 +657,15 @@ class StepByStepDashboard(QWidget):
             "modify_tooltip": "Link a completed calibration run and set the GPS lever-arm used by Fusion.",
         },
     }
+
+    @staticmethod
+    def _is_checked_state(state) -> bool:
+        if isinstance(state, bool):
+            return state
+        try:
+            return int(state) == int(Qt.CheckState.Checked.value)
+        except Exception:
+            return False
     
     def __init__(self, assets_path="ENGR-498-Project/assets", parent=None):
         super().__init__(parent)
@@ -544,13 +693,12 @@ class StepByStepDashboard(QWidget):
         controls_bar = self._create_controls_bar()
         main_layout.addWidget(controls_bar)
 
-        # Pipeline overview
-        overview = self._create_pipeline_overview()
-        main_layout.addWidget(overview)
-        
         # Scan table
         self.table = self._create_scan_table()
         main_layout.addWidget(self.table, stretch=1)
+
+        self.log_output = self._create_log_panel()
+        main_layout.addWidget(self.log_output)
         
         # Status bar
         self.status_label = QLabel("Post-Processing Step-By-Step: Rosbag Preprocessing -> Wires -> Image Inference -> Fusion + GPS, with manual Filtering and FLAI hooks.")
@@ -571,6 +719,7 @@ class StepByStepDashboard(QWidget):
             QCheckBox {
                 color: #1f2937;
                 spacing: 6px;
+                font-size: 12px;
             }
             QTableWidget {
                 background-color: white;
@@ -706,7 +855,26 @@ class StepByStepDashboard(QWidget):
         self.btn_run_pipeline.setToolTip("Run the automated backend chain for the selected scan: Rosbag Preprocessing -> Wires -> Image Inference -> Fusion + GPS.")
         self.btn_run_pipeline.clicked.connect(self._run_full_pipeline)
         layout.addWidget(self.btn_run_pipeline)
-        
+
+        btn_timing = QPushButton("Timing Calibration")
+        btn_timing.setToolTip("Set global camera/LiDAR timing defaults used by preprocessing and Fusion.")
+        btn_timing.setStyleSheet("""
+            QPushButton {
+                background-color: #0F766E;
+                color: white;
+                border: none;
+                padding: 10px 18px;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #115E59;
+            }
+        """)
+        btn_timing.clicked.connect(self._open_global_timing_dialog)
+        layout.addWidget(btn_timing)
+
         layout.addStretch()
         
         # Switch to Auto Mode button
@@ -749,6 +917,27 @@ class StepByStepDashboard(QWidget):
         
         return bar
 
+    def _open_global_timing_dialog(self):
+        settings = load_global_timing_settings()
+        current_timing = settings.get("timing", {})
+        dialog = GlobalTimingSettingsDialog(current_timing=current_timing, parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            settings["timing"] = dialog.get_timing_settings()
+            save_global_timing_settings(settings)
+            self.add_notification("Updated global timing calibration defaults", "done")
+            self.status_label.setText("Updated global timing calibration defaults.")
+
+    def _create_log_panel(self) -> QTextEdit:
+        log_output = QTextEdit()
+        log_output.setReadOnly(True)
+        log_output.setMinimumHeight(170)
+        log_output.setPlaceholderText("Backend console output will appear here while Rosbag Preprocessing, Wires, Image Inference, and Fusion + GPS run.")
+        log_output.setStyleSheet(
+            "QTextEdit { background-color: #0f172a; color: #e5e7eb; border: 1px solid #1f2937; "
+            "border-radius: 8px; padding: 8px; font-family: Consolas, 'Courier New', monospace; font-size: 11px; }"
+        )
+        return log_output
+
     def _create_pipeline_overview(self):
         """Create a short in-context explanation of what each backend stage does."""
         panel = QFrame()
@@ -765,7 +954,7 @@ class StepByStepDashboard(QWidget):
         layout.addWidget(title)
 
         summary = QLabel(
-            "<b>Rosbag Preprocessing</b> replays the rosbag, runs FAST-LIO SLAM, writes <code>scans.pcd</code>, "
+            "<b>Rosbag Preprocessing</b> replays the rosbag, runs FAST-LIO SLAM, stages raw <code>scans.pcd</code> plus a LAS conversion in <code>processed/point_clouds/</code>, "
             "exports JPGs from <code>/image/compressed</code>, writes <code>image_timestamps.csv</code>, and samples "
             "both <code>tf_camera_out.csv</code> and <code>tf_gps_out.csv</code>. <b>Image Inference</b> runs YOLO "
             "on those JPGs and writes <code>masks_npz/</code> plus <code>meta_json/</code>. <b>Fusion + GPS</b> "
@@ -803,7 +992,7 @@ class StepByStepDashboard(QWidget):
                 step_key = self.STEP_COLUMNS[header_text]
                 item.setToolTip(self.STEP_DETAILS[step_key]["summary"])
             elif header_text == "Actions":
-                item.setToolTip("Open the combined semantic viewer, run the full backend chain, open the Leaflet map, or delete the scan.")
+                item.setToolTip("Open the semantic/map views, run the full chain, open the latest SLAM point cloud, open exported images, save metadata edits, or delete the scan.")
             else:
                 item.setToolTip("The scan directory under assets/ containing raw bags, processed outputs, and metadata.")
         
@@ -814,7 +1003,7 @@ class StepByStepDashboard(QWidget):
         table.setAlternatingRowColors(True)
         
         # Fix row height
-        table.verticalHeader().setDefaultSectionSize(70)
+        table.verticalHeader().setDefaultSectionSize(104)
         
         # Column sizing
         header = table.horizontalHeader()
@@ -823,7 +1012,7 @@ class StepByStepDashboard(QWidget):
             header.setSectionResizeMode(i, QHeaderView.Fixed)
             table.setColumnWidth(i, 205)
         header.setSectionResizeMode(len(columns) - 1, QHeaderView.Fixed)  # Actions
-        table.setColumnWidth(len(columns) - 1, 300)
+        table.setColumnWidth(len(columns) - 1, 520)
         
         table.setMinimumHeight(300)
         table.itemSelectionChanged.connect(self._on_selection_changed)
@@ -843,6 +1032,7 @@ class StepByStepDashboard(QWidget):
             print(f"Created assets directory at {self.assets_path.resolve()}")
             return
 
+        selected_scan = self.selected_scan
         self.scans_data = {}
         
         for scan_dir in self.assets_path.iterdir():
@@ -858,6 +1048,18 @@ class StepByStepDashboard(QWidget):
                 print(f"Error loading metadata for {scan_dir.name}: {e}")
         
         self._update_table()
+        if selected_scan and selected_scan in self.scans_data:
+            self.select_scan(selected_scan)
+
+    def select_scan(self, scan_name: str) -> None:
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is None:
+                continue
+            if item.data(Qt.UserRole) == scan_name:
+                self.table.setCurrentCell(row, 0)
+                self.table.scrollToItem(item, QTableWidget.PositionAtCenter)
+                return
     
     def _update_table(self):
 
@@ -891,16 +1093,39 @@ class StepByStepDashboard(QWidget):
         widget = QWidget()
         layout = QVBoxLayout()
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        layout.setSpacing(3)
         widget.setLayout(layout)
         widget.setToolTip(step_info["summary"])
+        widget.setMinimumHeight(96)
 
         # Checkbox for completion
         checkbox = QCheckBox("Complete")
+        checkbox.setStyleSheet(
+            "QCheckBox { color: #1f2937; spacing: 8px; }"
+            "QCheckBox::indicator { width: 16px; height: 16px; border: 2px solid #64748B; border-radius: 3px; background: #FFFFFF; }"
+            "QCheckBox::indicator:checked { background: #673AB7; border: 2px solid #673AB7; }"
+        )
         checkbox.setChecked(status_dict.get(step_key) == "done")
         checkbox.setToolTip(f"Mark {step_info['title']} complete in metadata. This does not run the stage by itself.")
         checkbox.stateChanged.connect(lambda state, sn=scan_name, sk=step_key: self._on_checkbox_changed(sn, sk, state))
         layout.addWidget(checkbox)
+
+        if step_key == "slam":
+            pose_cfg = self.scans_data.get(scan_name, {}).get("config", {}).get("pose_recovery", {})
+            rviz_checkbox = QCheckBox("Show RViz")
+            rviz_checkbox.setStyleSheet(
+                "QCheckBox { color: #1f2937; spacing: 8px; }"
+                "QCheckBox::indicator { width: 16px; height: 16px; border: 2px solid #64748B; border-radius: 3px; background: #FFFFFF; }"
+                "QCheckBox::indicator:checked { background: #673AB7; border: 2px solid #673AB7; }"
+            )
+            rviz_checkbox.setChecked(bool(pose_cfg.get("enable_rviz", False)))
+            rviz_checkbox.setToolTip(
+                "Launch RViz alongside FAST-LIO so you can watch the SLAM point cloud being built in real time."
+            )
+            rviz_checkbox.stateChanged.connect(
+                lambda state, sn=scan_name: self._on_pose_recovery_rviz_changed(sn, state)
+            )
+            layout.addWidget(rviz_checkbox)
 
         # Buttons layout
         btn_layout = QHBoxLayout()
@@ -921,6 +1146,7 @@ class StepByStepDashboard(QWidget):
             }
         """)
         btn_run.setToolTip(step_info["run_tooltip"])
+        btn_run.setFixedHeight(24)
         btn_run.clicked.connect(
             lambda checked=False, sp=str(self.assets_path / scan_name), sk=step_key: self.runStepRequested.emit(sp, sk)
         )
@@ -942,6 +1168,7 @@ class StepByStepDashboard(QWidget):
             }
         """)
         btn_view.setToolTip(step_info["view_tooltip"])
+        btn_view.setFixedHeight(24)
         btn_view.clicked.connect(lambda: self._on_view_step(scan_name, step_key))
         btn_layout.addWidget(btn_view)
 
@@ -961,6 +1188,7 @@ class StepByStepDashboard(QWidget):
             }
         """)
         btn_modify.setToolTip(step_info["modify_tooltip"])
+        btn_modify.setFixedHeight(24)
         btn_modify.clicked.connect(lambda: self._on_modify_step(scan_name, step_key))
         btn_layout.addWidget(btn_modify)
         
@@ -975,7 +1203,15 @@ class StepByStepDashboard(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
         widget.setLayout(layout)
-        
+        status_dict = metadata.get("status", {})
+        files_dict = metadata.get("files", {})
+        scan_dir = self.assets_path / scan_name
+        pcd_path = resolve_scan_path(scan_dir, files_dict.get("pcd"))
+        images_dir = resolve_scan_path(scan_dir, files_dict.get("images_dir"))
+        slam_complete = status_dict.get("slam") == "done"
+        pcd_ready = slam_complete and pcd_path is not None and pcd_path.is_file()
+        images_ready = slam_complete and images_dir is not None and images_dir.is_dir()
+
         # View Result button
         btn_view = QPushButton("View Result")
         btn_view.setStyleSheet("""
@@ -1033,6 +1269,64 @@ class StepByStepDashboard(QWidget):
         btn_map.clicked.connect(lambda: self.openMapRequested.emit(str(self.assets_path / scan_name)))
         btn_map.setToolTip("Open the Leaflet map for this scan if fusion objects and/or powerline overlays exist.")
         layout.addWidget(btn_map)
+
+        btn_pcd = QPushButton("PCD")
+        btn_pcd.setStyleSheet("""
+            QPushButton {
+                background-color: #2563EB;
+                color: white;
+                border: none;
+                padding: 6px 10px;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover:enabled {
+                background-color: #1D4ED8;
+            }
+            QPushButton:disabled {
+                background-color: #CBD5E1;
+                color: #64748B;
+            }
+        """)
+        btn_pcd.setEnabled(pcd_ready)
+        btn_pcd.setToolTip(
+            "Open the latest SLAM point cloud in the Open3D viewer."
+            if pcd_ready
+            else "Run Rosbag Preprocessing first to generate the raw SLAM point cloud."
+        )
+        if pcd_ready:
+            btn_pcd.clicked.connect(lambda checked=False, fp=str(pcd_path): self.openSlamPointCloudRequested.emit(fp))
+        layout.addWidget(btn_pcd)
+
+        btn_images = QPushButton("Images")
+        btn_images.setStyleSheet("""
+            QPushButton {
+                background-color: #0F766E;
+                color: white;
+                border: none;
+                padding: 6px 10px;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover:enabled {
+                background-color: #115E59;
+            }
+            QPushButton:disabled {
+                background-color: #CBD5E1;
+                color: #64748B;
+            }
+        """)
+        btn_images.setEnabled(images_ready)
+        btn_images.setToolTip(
+            "Open the folder containing the exported JPG frames."
+            if images_ready
+            else "Run Rosbag Preprocessing first to export the image frames."
+        )
+        if images_ready:
+            btn_images.clicked.connect(lambda checked=False, fp=str(images_dir): self.openImagesFolderRequested.emit(fp))
+        layout.addWidget(btn_images)
         
         # Save button (only visible if modified)
         btn_save = QPushButton("💾 Save")
@@ -1077,7 +1371,8 @@ class StepByStepDashboard(QWidget):
     
     def _on_checkbox_changed(self, scan_name, step_key, state):
         """Handle checkbox state change"""
-        new_status = "done" if state == Qt.Checked else "pending"
+        is_checked = self._is_checked_state(state)
+        new_status = "done" if is_checked else "pending"
         
         # Update in-memory data
         if scan_name in self.scans_data:
@@ -1125,15 +1420,31 @@ class StepByStepDashboard(QWidget):
         title = self.STEP_DETAILS[step_key]["title"]
         print(f"VIEW clicked: {scan_name} -> {step_key}")
         self.add_notification(f"View requested: {scan_name} - {title}", "info")
-        if step_key == "filtering":
+        if step_key == "slam":
             scan_dir = self.assets_path / scan_name
             metadata = self.scans_data.get(scan_name, {})
             files_dict = metadata.get("files", {})
-            for key in ("filtered", "las", "pcd"):
-                filepath = resolve_scan_path(scan_dir, files_dict.get(key))
-                if filepath is not None and filepath.exists():
-                    self.openFilterViewerRequested.emit(str(filepath))
-                    return
+            pcd_path = resolve_scan_path(scan_dir, files_dict.get("pcd"))
+            if pcd_path is not None and pcd_path.exists():
+                self.openSlamPointCloudRequested.emit(str(pcd_path))
+                return
+            QMessageBox.information(
+                self,
+                "Rosbag Preprocessing",
+                "No SLAM point cloud is available yet. Run Rosbag Preprocessing first, then use the Images action button if you want to open the exported JPG folder.",
+            )
+            return
+        if step_key == "filtering":
+            scan_dir = self.assets_path / scan_name
+            metadata = self.scans_data.get(scan_name, {})
+            _, filepath = first_existing_artifact(
+                scan_dir,
+                metadata,
+                ("filtered_las", "raw_las", "filtered_pcd", "raw_pcd", "las", "pcd"),
+            )
+            if filepath is not None:
+                self.openFilterViewerRequested.emit(str(filepath))
+                return
             QMessageBox.information(
                 self,
                 "Filtering",
@@ -1180,14 +1491,15 @@ class StepByStepDashboard(QWidget):
         elif step_key == "filtering":
             print(f"OPEN FILTER clicked: {scan_name} -> {step_key}")
             if scan_name in self.scans_data:
-                files_dict = metadata.get("files", {})
-                filepath = files_dict.get("filtered") or files_dict.get("las") or files_dict.get("pcd") or ""
-                print(f"Opening filter viewer for {scan_name} with file: {filepath}")
-                if filepath:
-                    resolved = resolve_scan_path(scan_dir, filepath)
-                    if resolved is not None:
-                        self.openFilterViewerRequested.emit(str(resolved))
-                        return
+                key, resolved = first_existing_artifact(
+                    scan_dir,
+                    metadata,
+                    ("filtered_las", "raw_las", "filtered_pcd", "raw_pcd", "las", "pcd"),
+                )
+                print(f"Opening filter viewer for {scan_name} with {key}: {resolved}")
+                if resolved is not None:
+                    self.openFilterViewerRequested.emit(str(resolved))
+                    return
             QMessageBox.information(
                 self,
                 "Filtering",
@@ -1203,16 +1515,20 @@ class StepByStepDashboard(QWidget):
                 self.add_notification(f"Updated inference runtime settings for {scan_name}", "info")
         elif step_key == "fusion":
             current_config = metadata.get("config", {})
+            effective_timing = resolve_effective_timing(metadata)
             dialog = FusionParametersDialog(
                 fusion_config=current_config.get("fusion", {}),
                 gps_config=current_config.get("gps", {}),
+                timing_overrides=current_config.get("timing_overrides", {}),
+                effective_timing=effective_timing,
                 scan_dir=scan_dir,
                 parent=self,
             )
             if dialog.exec() == QDialog.Accepted:
-                fusion_config, gps_config = dialog.get_configs()
+                fusion_config, gps_config, timing_overrides = dialog.get_configs()
                 metadata.setdefault("config", {})["fusion"] = fusion_config
                 metadata.setdefault("config", {})["gps"] = gps_config
+                metadata.setdefault("config", {})["timing_overrides"] = timing_overrides
                 self.modified_scans.add(scan_name)
                 self._show_save_button(scan_name)
                 self.add_notification(f"Updated calibration/GPS settings for {scan_name}", "info")
@@ -1230,10 +1546,14 @@ class StepByStepDashboard(QWidget):
                     "- Those come from the separate Calibration Mode, where intrinsics are extracted from `/camera/camera_info` and direct visual LiDAR calibration solves the extrinsic transform.\n\n"
                     "### Main outputs\n"
                     "- `processed/pose_recovery/<run>/pcd/scans.pcd`\n"
+                    "- `processed/point_clouds/scans.pcd`\n"
+                    "- `processed/point_clouds/cloud.las`\n"
                     "- `processed/pose_recovery/<run>/images/*.jpg`\n"
                     "- `processed/pose_recovery/<run>/image_timestamps.csv`\n"
                     "- `processed/pose_recovery/<run>/tf_camera_out.csv`\n"
                     "- `processed/pose_recovery/<run>/tf_gps_out.csv`\n\n"
+                    "### Optional live viewer\n"
+                    "- Use the **Show RViz** checkbox directly in this Rosbag Preprocessing cell if you want RViz to open while FAST-LIO builds the map in real time.\n\n"
                     "### Why it matters\n"
                     "Image inference and Fusion both depend on the JPG images and camera timestamps created here."
                 ),
@@ -1287,6 +1607,17 @@ class StepByStepDashboard(QWidget):
             self.selected_scan = None
             self.status_label.setText("Step-by-Step Mode: run Rosbag Preprocessing, Wires, Image Inference, or Fusion + GPS individually. Calibration is a separate mode in the toolbar.")
             self.btn_run_pipeline.setEnabled(False)
+
+    def _on_pose_recovery_rviz_changed(self, scan_name: str, state: int):
+        scan_dir, metadata = load_scan_metadata(self.assets_path / scan_name)
+        is_checked = self._is_checked_state(state)
+        metadata.setdefault("config", {}).setdefault("pose_recovery", {})["enable_rviz"] = is_checked
+        save_scan_metadata(scan_dir, metadata)
+        self.scans_data[scan_name] = metadata
+        state_text = "enabled" if is_checked else "disabled"
+        self.add_notification(f"RViz preview {state_text} for {scan_name}", "info")
+        self.status_label.setText(f"Rosbag Preprocessing RViz preview {state_text} for {scan_name}")
+        self.refresh_scans()
     
     def _show_notifications(self):
         """Show notification panel"""
@@ -1299,6 +1630,16 @@ class StepByStepDashboard(QWidget):
     def add_notification(self, message, status="info"):
         """Add notification"""
         self.notification_panel.add_notification(message, status)
+
+    def append_log(self, message: str) -> None:
+        if not message:
+            return
+        self.log_output.append(message)
+        scrollbar = self.log_output.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def clear_log(self) -> None:
+        self.log_output.clear()
 
 
 if __name__ == "__main__":
@@ -1324,7 +1665,12 @@ if __name__ == "__main__":
             "wire_extraction": "pending",
             "fusion": "pending"
         },
-        "files": "assets/scan_001/processed/slam/LAW1.las",
+        "files": {
+            "raw_las": "processed/point_clouds/cloud.las",
+            "raw_pcd": "processed/point_clouds/scans.pcd",
+            "filtered_las": "processed/point_clouds/cloud_filtered.las",
+            "filtered_pcd": "processed/point_clouds/scans_filtered.pcd"
+        },
         "wire_params": {
             "R": 0.5,
             "angleThr": 10,

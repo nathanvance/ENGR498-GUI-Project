@@ -13,12 +13,12 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
     QFrame, QScrollArea, QMenu, QFileDialog, QMessageBox,
-    QToolButton, QSizePolicy
+    QToolButton, QSizePolicy, QTextEdit, QCheckBox
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon
 
-from scan_metadata import load_scan_metadata
+from scan_metadata import load_scan_metadata, resolve_scan_path, save_scan_metadata
 
 
 class StatusIndicator(QWidget):
@@ -175,6 +175,8 @@ class DashboardView(QWidget):
     openViewerRequested = Signal(str)  # scan_path
     openMapRequested = Signal(str)  # scan_path
     runPipelineRequested = Signal(str)  # scan_path
+    openSlamPointCloudRequested = Signal(str)  # point_cloud_path
+    openImagesFolderRequested = Signal(str)  # images_dir_path
     createScanRequested = Signal()
     switchToStepModeRequested = Signal()  # NEW: Switch to step-by-step mode
     
@@ -224,6 +226,9 @@ class DashboardView(QWidget):
         # Scan table
         self.table = self._create_scan_table()
         main_layout.addWidget(self.table, stretch=1)
+
+        self.log_output = self._create_log_panel()
+        main_layout.addWidget(self.log_output)
         
         # Status bar
         self.status_label = QLabel("Post-Processing Auto Mode runs Rosbag Preprocessing, Wires, Image Inference, and Fusion + GPS as one backend chain. Calibration is a separate mode.")
@@ -376,6 +381,14 @@ class DashboardView(QWidget):
         self.btn_run_pipeline.setToolTip("Run the automated backend chain for the selected scan: Rosbag Preprocessing -> Wires -> Image Inference -> Fusion + GPS.")
         self.btn_run_pipeline.clicked.connect(self._run_full_pipeline)
         layout.addWidget(self.btn_run_pipeline)
+
+        self.rviz_checkbox = QCheckBox("Show RViz during Rosbag Preprocessing")
+        self.rviz_checkbox.setEnabled(False)
+        self.rviz_checkbox.setToolTip(
+            "If enabled, Rosbag Preprocessing launches RViz so you can watch FAST-LIO build the point cloud in real time."
+        )
+        self.rviz_checkbox.stateChanged.connect(self._on_rviz_checkbox_changed)
+        layout.addWidget(self.rviz_checkbox)
         
         layout.addStretch()
         
@@ -437,7 +450,7 @@ class DashboardView(QWidget):
             elif header_text == "Status":
                 item.setToolTip("Overall scan state derived from the stage statuses shown in this row.")
             elif header_text == "Actions":
-                item.setToolTip("Open the semantic viewer, open the map, or delete the scan.")
+                item.setToolTip("Run the full chain, open semantic/map views, open the latest SLAM point cloud, open exported images, or delete the scan.")
             else:
                 item.setToolTip("The scan directory under assets/ containing raw bags, processed outputs, and metadata.")
         
@@ -460,12 +473,23 @@ class DashboardView(QWidget):
         header.setSectionResizeMode(len(columns) - 2, QHeaderView.Fixed)  # Status
         table.setColumnWidth(len(columns) - 2, 150)
         header.setSectionResizeMode(len(columns) - 1, QHeaderView.Fixed)  # Actions
-        table.setColumnWidth(len(columns) - 1, 200)
+        table.setColumnWidth(len(columns) - 1, 430)
         
         table.setMinimumHeight(300)
         table.itemSelectionChanged.connect(self._on_selection_changed)
         
         return table
+
+    def _create_log_panel(self) -> QTextEdit:
+        log_output = QTextEdit()
+        log_output.setReadOnly(True)
+        log_output.setMinimumHeight(170)
+        log_output.setPlaceholderText("Backend console output will appear here during rosbag preprocessing, wire extraction, inference, and fusion.")
+        log_output.setStyleSheet(
+            "QTextEdit { background-color: #0f172a; color: #e5e7eb; border: 1px solid #1f2937; "
+            "border-radius: 8px; padding: 8px; font-family: Consolas, 'Courier New', monospace; font-size: 11px; }"
+        )
+        return log_output
     
     def _setup_refresh_timer(self):
         """Setup timer to auto-refresh table"""
@@ -479,6 +503,7 @@ class DashboardView(QWidget):
             self.assets_path.mkdir(parents=True, exist_ok=True)
             return
 
+        selected_scan = self.selected_scan
         self.scans_data = {}
         
         # Load all scan metadata
@@ -495,6 +520,20 @@ class DashboardView(QWidget):
                 print(f"Error loading metadata for {scan_dir.name}: {e}")
         
         self._update_table()
+        if selected_scan and selected_scan in self.scans_data:
+            self.select_scan(selected_scan)
+        self._sync_pose_recovery_checkbox()
+
+    def select_scan(self, scan_name: str) -> None:
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is None:
+                continue
+            if item.data(Qt.UserRole) == scan_name:
+                self.table.setCurrentCell(row, 0)
+                self.table.scrollToItem(item, QTableWidget.PositionAtCenter)
+                self._sync_pose_recovery_checkbox()
+                return
     
     def _update_table(self):
         """Update table with current scan data"""
@@ -572,6 +611,13 @@ class DashboardView(QWidget):
         widget.setLayout(layout)
         
         status_dict = metadata.get("status", {})
+        files_dict = metadata.get("files", {})
+        scan_dir = self.assets_path / scan_name
+        pcd_path = resolve_scan_path(scan_dir, files_dict.get("pcd"))
+        images_dir = resolve_scan_path(scan_dir, files_dict.get("images_dir"))
+        slam_complete = status_dict.get("slam") == "done"
+        pcd_ready = slam_complete and pcd_path is not None and pcd_path.is_file()
+        images_ready = slam_complete and images_dir is not None and images_dir.is_dir()
         
         # View Result button (if any step is complete)
         if any(s == "done" for s in status_dict.values()):
@@ -609,6 +655,62 @@ class DashboardView(QWidget):
             """)
             btn_map.clicked.connect(lambda checked=False, sp=scan_path: self.openMapRequested.emit(sp))
             layout.addWidget(btn_map)
+
+        btn_pcd = QPushButton("PCD")
+        btn_pcd.setStyleSheet("""
+            QPushButton {
+                background-color: #2563EB;
+                color: white;
+                border: none;
+                padding: 6px 10px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover:enabled {
+                background-color: #1D4ED8;
+            }
+            QPushButton:disabled {
+                background-color: #CBD5E1;
+                color: #64748B;
+            }
+        """)
+        btn_pcd.setEnabled(pcd_ready)
+        btn_pcd.setToolTip(
+            "Open the latest SLAM point cloud in the Open3D viewer."
+            if pcd_ready
+            else "Run Rosbag Preprocessing first to generate scans.pcd."
+        )
+        if pcd_ready:
+            btn_pcd.clicked.connect(lambda checked=False, fp=str(pcd_path): self.openSlamPointCloudRequested.emit(fp))
+        layout.addWidget(btn_pcd)
+
+        btn_images = QPushButton("Images")
+        btn_images.setStyleSheet("""
+            QPushButton {
+                background-color: #0F766E;
+                color: white;
+                border: none;
+                padding: 6px 10px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover:enabled {
+                background-color: #115E59;
+            }
+            QPushButton:disabled {
+                background-color: #CBD5E1;
+                color: #64748B;
+            }
+        """)
+        btn_images.setEnabled(images_ready)
+        btn_images.setToolTip(
+            "Open the folder containing exported JPG frames."
+            if images_ready
+            else "Run Rosbag Preprocessing first to export the image frames."
+        )
+        if images_ready:
+            btn_images.clicked.connect(lambda checked=False, fp=str(images_dir): self.openImagesFolderRequested.emit(fp))
+        layout.addWidget(btn_images)
         
         # Delete button
         btn_delete = QPushButton("🗑")
@@ -636,7 +738,7 @@ class DashboardView(QWidget):
         """Map step key to file key"""
         mapping = {
             "slam": "pcd",
-            "filtering": "filtered",
+            "filtering": "filtered_las",
             "flai": "segmented",
             "inference": "masks_dir",
             "fusion": "fused",
@@ -655,6 +757,44 @@ class DashboardView(QWidget):
             self.selected_scan = None
             self.btn_run_pipeline.setEnabled(False)
             self.status_label.setText("Post-Processing Auto Mode runs Rosbag Preprocessing, Wires, Image Inference, and Fusion + GPS as one backend chain. Calibration is a separate mode.")
+        self._sync_pose_recovery_checkbox()
+
+    def _sync_pose_recovery_checkbox(self):
+        self.rviz_checkbox.blockSignals(True)
+        if not self.selected_scan or self.selected_scan not in self.scans_data:
+            self.rviz_checkbox.setChecked(False)
+            self.rviz_checkbox.setEnabled(False)
+            self.rviz_checkbox.blockSignals(False)
+            return
+
+        metadata = self.scans_data[self.selected_scan]
+        enabled = bool(metadata.get("config", {}).get("pose_recovery", {}).get("enable_rviz", False))
+        self.rviz_checkbox.setEnabled(True)
+        self.rviz_checkbox.setChecked(enabled)
+        self.rviz_checkbox.blockSignals(False)
+
+    @staticmethod
+    def _is_checked_state(state) -> bool:
+        if isinstance(state, bool):
+            return state
+        try:
+            return int(state) == int(Qt.CheckState.Checked.value)
+        except Exception:
+            return False
+
+    def _on_rviz_checkbox_changed(self, state: int):
+        if not self.selected_scan:
+            return
+
+        scan_dir, metadata = load_scan_metadata(self.assets_path / self.selected_scan)
+        is_checked = self._is_checked_state(state)
+        metadata.setdefault("config", {}).setdefault("pose_recovery", {})["enable_rviz"] = is_checked
+        save_scan_metadata(scan_dir, metadata)
+        self.scans_data[self.selected_scan] = metadata
+        state_text = "enabled" if is_checked else "disabled"
+        self.add_notification(f"RViz preview {state_text} for {self.selected_scan}", "info")
+        self.status_label.setText(f"Rosbag Preprocessing RViz preview {state_text} for {self.selected_scan}")
+        self.refresh_scans()
     
     def _run_full_pipeline(self):
         """Run full pipeline for selected scan"""
@@ -699,6 +839,16 @@ class DashboardView(QWidget):
         """Add a notification to the panel"""
         self.notification_panel.add_notification(message, status)
 
+    def append_log(self, message: str) -> None:
+        if not message:
+            return
+        self.log_output.append(message)
+        scrollbar = self.log_output.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def clear_log(self) -> None:
+        self.log_output.clear()
+
 
 if __name__ == "__main__":
     from PySide6.QtWidgets import QApplication
@@ -725,8 +875,10 @@ if __name__ == "__main__":
             "fusion": "pending"
         },
         "files": {
-            "pcd": "processed/slam/cloud.pcd",
-            "filtered": "processed/filtered/cloud_filtered.pcd"
+            "raw_pcd": "processed/point_clouds/scans.pcd",
+            "raw_las": "processed/point_clouds/cloud.las",
+            "filtered_pcd": "processed/point_clouds/scans_filtered.pcd",
+            "filtered_las": "processed/point_clouds/cloud_filtered.las"
         },
         "params": {
             "voxel_size": 0.1,
@@ -1537,8 +1689,10 @@ if __name__ == "__main__":
             "wire_extraction": "pending"
         },
         "files": {
-            "pcd": "processed/slam/cloud.pcd",
-            "filtered": "processed/filtered/cloud_filtered.pcd"
+            "raw_pcd": "processed/point_clouds/scans.pcd",
+            "raw_las": "processed/point_clouds/cloud.las",
+            "filtered_pcd": "processed/point_clouds/scans_filtered.pcd",
+            "filtered_las": "processed/point_clouds/cloud_filtered.las"
         },
         "params": {
             "voxel_size": 0.1,

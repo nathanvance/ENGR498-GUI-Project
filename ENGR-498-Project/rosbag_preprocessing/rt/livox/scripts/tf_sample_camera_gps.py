@@ -403,6 +403,7 @@ class TimebaseState:
         self.mode = "TF"
         self.first_tf: Optional[float] = None
         self.first_clock: Optional[float] = None
+        self.lookup_time_offset_sec: float = 0.0
 
 
 def build_gps_snapshot(msg: NavSatFix) -> Dict[str, float]:
@@ -477,6 +478,12 @@ def initialize_timebase(
     timebase.mode = mode
     timebase.first_tf = first_tf
     timebase.first_clock = first_clock
+    if first_clock is not None and abs(first_clock - first_tf) > 60.0:
+        timebase.lookup_time_offset_sec = first_clock - first_tf
+        rospy.loginfo(
+            "Applying TF lookup timestamp offset of %.9f seconds (clock -> TF domain).",
+            timebase.lookup_time_offset_sec,
+        )
     return True, "OK"
 
 
@@ -486,8 +493,21 @@ def timebase_stalled(mode: str, tf_mon: TFStampMonitor, clock_mon: Optional[Cloc
     return tf_mon.has_stalled(stall_wall_sec)
 
 
-def write_camera_row(writer: csv.writer, t_in_sec: float, t_query_sec: float, pose: Sequence[object], status: str) -> None:
-    writer.writerow([t_in_sec, t_query_sec, *pose, status])
+def map_query_time_to_tf_domain(t_query_sec: float, timebase: TimebaseState) -> float:
+    if timebase.lookup_time_offset_sec:
+        return max(t_query_sec - timebase.lookup_time_offset_sec, 0.0)
+    return t_query_sec
+
+
+def write_camera_row(
+    writer: csv.writer,
+    t_in_sec: float,
+    t_query_sec: float,
+    t_lookup_sec: float,
+    pose: Sequence[object],
+    status: str,
+) -> None:
+    writer.writerow([t_in_sec, t_query_sec, t_lookup_sec, *pose, status])
 
 
 def write_gps_row(
@@ -538,6 +558,7 @@ def main() -> int:
     ap.add_argument("--retry-sleep-wall-sec", type=float, default=0.02)
     ap.add_argument("--stall-wall-sec", type=float, default=2.0)
     ap.add_argument("--event-queue-size", type=int, default=2048)
+    ap.add_argument("--camera-time-offset-sec", type=float, default=0.0)
     args = ap.parse_args()
 
     rospy.init_node("tf_sample_camera_gps", anonymous=True, disable_signals=True)
@@ -642,7 +663,9 @@ def main() -> int:
             camera_writer = csv.writer(camera_f)
             gps_writer = csv.writer(gps_f)
 
-            camera_writer.writerow(["t_in_sec", "t_query_sec", "x", "y", "z", "qx", "qy", "qz", "qw", "status"])
+            camera_writer.writerow(
+                ["t_in_sec", "t_query_sec", "t_lookup_sec", "x", "y", "z", "qx", "qy", "qz", "qw", "status"]
+            )
             gps_writer.writerow(
                 [
                     "t_in_sec",
@@ -698,8 +721,20 @@ def main() -> int:
                 )
                 if not ok:
                     pose = ["", "", "", "", "", "", ""]
+                    effective_query_time_sec = (
+                        event.t_query_sec + args.camera_time_offset_sec
+                        if event.kind == "camera"
+                        else event.t_query_sec
+                    )
                     if event.kind == "camera":
-                        write_camera_row(camera_writer, t_in_sec, event.t_query_sec, pose, init_status)
+                        write_camera_row(
+                            camera_writer,
+                            t_in_sec,
+                            event.t_query_sec,
+                            effective_query_time_sec,
+                            pose,
+                            init_status,
+                        )
                         camera_f.flush()
                         counts["camera"] += 1
                         if image_exporter is not None and event.image_msg is not None:
@@ -712,8 +747,14 @@ def main() -> int:
                     event_queue.task_done()
                     continue
 
+                effective_query_time_sec = (
+                    event.t_query_sec + args.camera_time_offset_sec
+                    if event.kind == "camera"
+                    else event.t_query_sec
+                )
+
                 wait_status = wait_until_time_reached(
-                    t_query=event.t_query_sec,
+                    t_query=effective_query_time_sec,
                     max_wait_wall_sec=args.max_wait_per_sample_wall_sec,
                     mode=timebase.mode,
                     clock_mon=clock_mon,
@@ -721,7 +762,8 @@ def main() -> int:
                     stall_wall_sec=args.stall_wall_sec,
                 )
 
-                stamp = rospy.Time.from_sec(event.t_query_sec)
+                lookup_time_sec = map_query_time_to_tf_domain(effective_query_time_sec, timebase)
+                stamp = rospy.Time.from_sec(lookup_time_sec)
                 pose = ["", "", "", "", "", "", ""]
                 status = wait_status
 
@@ -759,7 +801,14 @@ def main() -> int:
                     status = f"TIME_NOT_REACHED:{wait_status}"
 
                 if event.kind == "camera":
-                    write_camera_row(camera_writer, t_in_sec, event.t_query_sec, pose, status)
+                    write_camera_row(
+                        camera_writer,
+                        t_in_sec,
+                        event.t_query_sec,
+                        effective_query_time_sec,
+                        pose,
+                        status,
+                    )
                     camera_f.flush()
                     counts["camera"] += 1
                     if image_exporter is not None and event.image_msg is not None:

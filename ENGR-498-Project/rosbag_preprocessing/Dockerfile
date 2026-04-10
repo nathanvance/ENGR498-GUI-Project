@@ -63,6 +63,9 @@ COPY overrides /opt/portable_ros_stack/overrides
 COPY docker/ros_entrypoint.sh /ros_entrypoint.sh
 
 RUN chmod +x /ros_entrypoint.sh \
+  && mkdir -p /home/leif \
+  && ln -sfn "${PORTABLE_ROS_HOME}/ws_livox" /home/leif/ws_livox \
+  && ln -sfn "${PORTABLE_ROS_HOME}/ws_calib" /home/leif/ws_calib \
   && if [[ -d /opt/portable_ros_stack/overrides/ws_calib/scripts ]]; then rsync -a /opt/portable_ros_stack/overrides/ws_calib/scripts/ "${PORTABLE_ROS_HOME}/ws_calib/scripts/"; fi \
   && if [[ -d /opt/portable_ros_stack/overrides/ws_livox/scripts ]]; then rsync -a /opt/portable_ros_stack/overrides/ws_livox/scripts/ "${PORTABLE_ROS_HOME}/ws_livox/scripts/"; fi \
   && if [[ -f /usr/local/lib/libgtsam.so.4.2.0 ]]; then ln -sf libgtsam.so.4.2.0 /usr/local/lib/libgtsam.so.4 && ln -sf libgtsam.so.4 /usr/local/lib/libgtsam.so; fi \

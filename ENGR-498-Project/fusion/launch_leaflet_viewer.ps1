@@ -2,15 +2,16 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $fusionRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = Split-Path -Parent $fusionRoot
 $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
 $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
 $port = 8765
-$url = "http://localhost:$port/leaflet_viewer/index.html"
-$urlObjectsExample = "http://localhost:$port/leaflet_viewer/index.html?data=../outputs/fused_objects.json"
-$urlPowerlinesExample = "http://localhost:$port/leaflet_viewer/index.html?powerlines=../outputs/eng498_powerlines_overlay.json"
-$urlCombinedExample = "http://localhost:$port/leaflet_viewer/index.html?data=../outputs/fused_objects.json&powerlines=../outputs/eng498_powerlines_overlay.json"
+$url = "http://localhost:$port/fusion/leaflet_viewer/index.html"
+$urlObjectsExample = "http://localhost:$port/fusion/leaflet_viewer/index.html?data=/fusion/outputs/fused_objects.json"
+$urlPowerlinesExample = "http://localhost:$port/fusion/leaflet_viewer/index.html?powerlines=/fusion/outputs/eng498_powerlines_overlay.json"
+$urlCombinedExample = "http://localhost:$port/fusion/leaflet_viewer/index.html?data=/fusion/outputs/fused_objects.json&powerlines=/fusion/outputs/eng498_powerlines_overlay.json"
 
-Write-Host "Serving Fusion from $fusionRoot"
+Write-Host "Serving project root from $projectRoot"
 Write-Host "Open this URL in your browser:"
 Write-Host $url
 Write-Host ""
@@ -25,7 +26,7 @@ Write-Host $urlCombinedExample
 Write-Host ""
 Write-Host "Press Ctrl+C to stop the server."
 
-Push-Location $fusionRoot
+Push-Location $projectRoot
 try {
     if ($env:FUSION_PYTHON) {
         & $env:FUSION_PYTHON -m http.server $port

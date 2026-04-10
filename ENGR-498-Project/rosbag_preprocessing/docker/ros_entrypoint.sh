@@ -6,8 +6,8 @@ set --
 
 source /opt/ros/${ROS_DISTRO:-noetic}/setup.bash
 
-export HOME="${HOME:-/home/portable}"
-export PORTABLE_ROS_HOME="${PORTABLE_ROS_HOME:-$HOME}"
+export PORTABLE_ROS_HOME="/home/portable"
+export HOME="${PORTABLE_ROS_HOME}"
 export LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH:-}"
 
 if [[ -f "${PORTABLE_ROS_HOME}/iridescence/build/libiridescence.so" ]]; then

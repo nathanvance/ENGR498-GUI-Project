@@ -96,6 +96,12 @@ Calibration:
 python .\launcher\run_calibration_workflow.py <dataset_path> --run-name test1_manual
 ```
 
+Calibration requirements check:
+
+```powershell
+python .\launcher\run_calibration_workflow.py --check-only
+```
+
 Pose recovery / TF export:
 
 ```powershell
@@ -134,7 +140,12 @@ packages into whichever interpreter is passed with `-Python`.
 Required for the calibration GUIs:
 
 - WSLg support
-- working OpenGL / GPU acceleration through WSLg
+- working hardware-backed OpenGL / GPU acceleration through WSLg
+
+Not supported for calibration on Windows:
+
+- software OpenGL rendering
+- CPU-only fallback rendering
 
 Not required on the host:
 
@@ -374,6 +385,22 @@ That keeps the dashboard path and the CLI path on the same backend contract.
 
 
 ## Run The Calibration Workflow
+
+Before first use on a machine, run the requirements check:
+
+```powershell
+python .\launcher\run_calibration_workflow.py --check-only
+```
+
+That probe verifies:
+
+- WSL is reachable
+- Docker can launch the calibration container
+- WSLg display plumbing is present
+- the calibration container reports a hardware-backed OpenGL renderer
+
+If the requirements check reports a software renderer such as `llvmpipe`, do
+not proceed with calibration on that machine.
 
 From this folder:
 

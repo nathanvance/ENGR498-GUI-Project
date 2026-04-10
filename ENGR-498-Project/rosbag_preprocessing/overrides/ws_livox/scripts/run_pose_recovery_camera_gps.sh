@@ -4,19 +4,25 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  run_pose_recovery_camera_gps.sh [bag_path] [--output-root DIR] [--image-topic TOPIC] [--gps-topic TOPIC] [--master-port PORT] [--remap RULE]
+  run_pose_recovery_camera_gps.sh [bag_path] [--output-root DIR] [--image-topic TOPIC] [--gps-topic TOPIC] [--camera-time-offset-sec OFFSET] [--master-port PORT] [--remap RULE] [--rviz]
 
 Examples:
   run_pose_recovery_camera_gps.sh ~/ws_livox/bags/my_run.bag
   run_pose_recovery_camera_gps.sh ~/ws_livox/bags/my_run.bag --image-topic /camera/image/compressed --gps-topic /fix
+  run_pose_recovery_camera_gps.sh ~/ws_livox/bags/my_run.bag --rviz
 EOF
 }
+
+RUNTIME_HOME="${PORTABLE_ROS_HOME:-/home/portable}"
+if [[ ! -d "${RUNTIME_HOME}/ws_livox" ]]; then
+  RUNTIME_HOME="/home/portable"
+fi
 
 resolve_bag() {
   local bag="$1"
   if [[ "$bag" != /* ]]; then
     [[ -f "$PWD/$bag" ]] && { echo "$PWD/$bag"; return 0; }
-    [[ -f "$HOME/ws_livox/bags/$bag" ]] && { echo "$HOME/ws_livox/bags/$bag"; return 0; }
+    [[ -f "$RUNTIME_HOME/ws_livox/bags/$bag" ]] && { echo "$RUNTIME_HOME/ws_livox/bags/$bag"; return 0; }
   fi
   echo "$bag"
 }
@@ -43,6 +49,22 @@ wait_for_file() {
   start="$(date +%s)"
   while true; do
     [[ -f "$path" ]] && return 0
+    if (( $(date +%s) - start >= timeout_s )); then
+      return 1
+    fi
+    sleep 0.2
+  done
+}
+
+wait_for_rosnode_exit() {
+  local node_name="$1"
+  local timeout_s="${2:-20}"
+  local start
+  start="$(date +%s)"
+  while true; do
+    if ! rosnode list 2>/dev/null | grep -Fxq "$node_name"; then
+      return 0
+    fi
     if (( $(date +%s) - start >= timeout_s )); then
       return 1
     fi
@@ -109,14 +131,89 @@ detect_bag_topic() {
   choose_best_topic "$kind" "${candidates[@]}"
 }
 
-BAG_IN="$HOME/ws_livox/bags/movingtest1.bag"
-OUTPUT_ROOT="$HOME/ws_livox/pose_recovery_outputs"
+inspect_topic_message() {
+  local bag="$1"
+  local topic="$2"
+  python3 - "$bag" "$topic" <<'PY'
+import rosbag
+import sys
+
+bag_path, topic = sys.argv[1:3]
+message_type = ""
+field_names = []
+
+with rosbag.Bag(bag_path) as bag:
+    for _, msg, _ in bag.read_messages(topics=[topic]):
+        message_type = getattr(msg, "_type", "")
+        fields = getattr(msg, "fields", None)
+        if fields is not None:
+            field_names = [field.name for field in fields]
+        break
+
+print(message_type)
+print(",".join(field_names))
+PY
+}
+
+port_is_available() {
+  local port="$1"
+  python3 - "$port" <<'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    sock.bind(("127.0.0.1", port))
+except OSError:
+    sys.exit(1)
+finally:
+    sock.close()
+PY
+}
+
+choose_master_port() {
+  local requested="$1"
+  local candidate
+  for candidate in $(seq "$requested" $((requested + 20))); do
+    if port_is_available "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_fastlio_command() {
+  local package_root=""
+  local launch_path=""
+  if package_root="$(rospack find "$FASTLIO_PKG" 2>/dev/null)"; then
+    if [[ -f "$package_root/launch/$FASTLIO_LAUNCH" ]]; then
+      FASTLIO_CMD=(roslaunch "$FASTLIO_PKG" "$FASTLIO_LAUNCH" "${RVIZ_ARG_NAME}:=${RVIZ_ARG_VALUE}")
+      return 0
+    fi
+  fi
+
+  launch_path="$RUNTIME_HOME/ws_livox/src/FAST_LIO/launch/$FASTLIO_LAUNCH"
+  if [[ -f "$launch_path" ]]; then
+    FASTLIO_CMD=(roslaunch "$launch_path" "${RVIZ_ARG_NAME}:=${RVIZ_ARG_VALUE}")
+    return 0
+  fi
+
+  return 1
+}
+
+BAG_IN="$RUNTIME_HOME/ws_livox/bags/movingtest1.bag"
+OUTPUT_ROOT="${PORTABLE_ROS_POSE_OUTPUT_ROOT:-${PORTABLE_ROS_OUTPUT_ROOT:-$RUNTIME_HOME/ws_livox/pose_recovery_outputs}}"
 IMAGE_TOPIC_OVERRIDE=""
 GPS_TOPIC_OVERRIDE=""
 MASTER_PORT="${MASTER_PORT:-11311}"
+CAMERA_TIME_OFFSET_SEC="${CAMERA_TIME_OFFSET_SEC:-0.0}"
 UNPAUSE_DELAY_MS="${UNPAUSE_DELAY_MS:-3000}"
 DISCOVERY_TIMEOUT_WALL_SEC="${DISCOVERY_TIMEOUT_WALL_SEC:-30}"
 REMAPS=()
+ENABLE_RVIZ=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -140,16 +237,24 @@ while [[ $# -gt 0 ]]; do
       MASTER_PORT="$2"
       shift 2
       ;;
+    --camera-time-offset-sec)
+      CAMERA_TIME_OFFSET_SEC="$2"
+      shift 2
+      ;;
     --remap)
       REMAPS+=("$2")
       shift 2
+      ;;
+    --rviz)
+      ENABLE_RVIZ=1
+      shift
       ;;
     --*)
       echo "ERROR: Unknown option: $1" >&2
       exit 2
       ;;
     *)
-      if [[ "$BAG_IN" == "$HOME/ws_livox/bags/movingtest1.bag" ]]; then
+      if [[ "$BAG_IN" == "$RUNTIME_HOME/ws_livox/bags/movingtest1.bag" ]]; then
         BAG_IN="$1"
       else
         echo "ERROR: Unexpected positional argument: $1" >&2
@@ -161,8 +266,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 set --
-source /opt/ros/noetic/setup.bash
-source "$HOME/ws_livox/devel/setup.bash"
+export ROS_DISTRO="${ROS_DISTRO:-noetic}"
+set +u
+source /opt/ros/${ROS_DISTRO}/setup.bash
+source "$RUNTIME_HOME/ws_livox/devel/setup.bash"
+export ROS_PACKAGE_PATH="$RUNTIME_HOME/ws_livox/src${ROS_PACKAGE_PATH:+:$ROS_PACKAGE_PATH}"
+set -u
 
 BAG="$(resolve_bag "$BAG_IN")"
 [[ -f "$BAG" ]] || { echo "ERROR: Bag file not found: $BAG" >&2; exit 2; }
@@ -189,20 +298,33 @@ FASTLIO_LOG="$LOG_DIR/fastlio.log"
 ROSBAG_LOG="$LOG_DIR/rosbag.log"
 SAMPLER_LOG="$LOG_DIR/sampler.log"
 ROSCORE_LOG="$LOG_DIR/roscore.log"
+CONVERTER_LOG="$LOG_DIR/livox_converter.log"
 
 FASTLIO_PKG="fast_lio"
 FASTLIO_LAUNCH="mapping_horizon.launch"
+FASTLIO_NODE_NAME="/laserMapping"
 RVIZ_ARG_NAME="rviz"
 RVIZ_ARG_VALUE="false"
-FASTLIO_CMD=(roslaunch "$FASTLIO_PKG" "$FASTLIO_LAUNCH" "${RVIZ_ARG_NAME}:=${RVIZ_ARG_VALUE}")
+if (( ENABLE_RVIZ == 1 )); then
+  RVIZ_ARG_VALUE="true"
+fi
 
-FASTLIO_PCD_DIR="$HOME/ws_livox/src/FAST_LIO/PCD"
+FASTLIO_PCD_DIR="$RUNTIME_HOME/ws_livox/src/FAST_LIO/PCD"
 FASTLIO_PCD_FILE="$FASTLIO_PCD_DIR/scans.pcd"
+FASTLIO_LOG_DIR="$RUNTIME_HOME/ws_livox/src/FAST_LIO/Log"
+LEGACY_FASTLIO_PCD_FILE="/home/leif/ws_livox/src/FAST_LIO/PCD/scans.pcd"
+LEGACY_FASTLIO_LOG_DIR="/home/leif/ws_livox/src/FAST_LIO/Log"
 mkdir -p "$FASTLIO_PCD_DIR"
+mkdir -p "$FASTLIO_LOG_DIR"
+mkdir -p "$LEGACY_FASTLIO_LOG_DIR"
 rm -f "$FASTLIO_PCD_FILE"
+rm -f "$LEGACY_FASTLIO_PCD_FILE"
 
 IMAGE_TOPIC="$IMAGE_TOPIC_OVERRIDE"
 GPS_TOPIC="$GPS_TOPIC_OVERRIDE"
+LIDAR_TOPIC="${LIDAR_TOPIC:-/livox/lidar}"
+LIDAR_RAW_TOPIC="${LIDAR_RAW_TOPIC:-${LIDAR_TOPIC}_raw}"
+USE_LIVOX_POINTCLOUD2_RELAY=0
 
 if [[ -z "$IMAGE_TOPIC" ]]; then
   IMAGE_TOPIC="$(detect_bag_topic "$BAG" "image")"
@@ -211,12 +333,43 @@ if [[ -z "$GPS_TOPIC" ]]; then
   GPS_TOPIC="$(detect_bag_topic "$BAG" "gps")"
 fi
 
+mapfile -t LIDAR_TOPIC_INFO < <(inspect_topic_message "$BAG" "$LIDAR_TOPIC")
+LIDAR_MSG_TYPE="${LIDAR_TOPIC_INFO[0]:-}"
+LIDAR_FIELD_NAMES="${LIDAR_TOPIC_INFO[1]:-}"
+
+if [[ "$LIDAR_MSG_TYPE" == "sensor_msgs/PointCloud2" ]]; then
+  if [[ "$LIDAR_FIELD_NAMES" == *"tag"* && "$LIDAR_FIELD_NAMES" == *"line"* ]]; then
+    USE_LIVOX_POINTCLOUD2_RELAY=1
+    REMAPS+=("${LIDAR_TOPIC}:=${LIDAR_RAW_TOPIC}")
+  else
+    echo "ERROR: LiDAR topic ${LIDAR_TOPIC} is sensor_msgs/PointCloud2, but it does not expose Livox tag/line fields for automatic conversion." >&2
+    echo "  detected fields: ${LIDAR_FIELD_NAMES:-<none>}" >&2
+    exit 2
+  fi
+elif [[ -n "$LIDAR_MSG_TYPE" && "$LIDAR_MSG_TYPE" != "livox_ros_driver/CustomMsg" ]]; then
+  echo "ERROR: Unsupported LiDAR topic type on ${LIDAR_TOPIC}: ${LIDAR_MSG_TYPE}" >&2
+  exit 2
+fi
+
 echo "[preflight] bag:              $BAG"
 echo "[preflight] output dir:       $RUN_OUT_DIR"
 echo "[preflight] image topic:      ${IMAGE_TOPIC:-auto-runtime-detect}"
 echo "[preflight] gps topic:        ${GPS_TOPIC:-auto-runtime-detect}"
+echo "[preflight] lidar topic:      ${LIDAR_TOPIC}"
+echo "[preflight] lidar type:       ${LIDAR_MSG_TYPE:-unknown}"
+echo "[preflight] lidar fields:     ${LIDAR_FIELD_NAMES:-unknown}"
+echo "[preflight] livox relay:      $([[ "$USE_LIVOX_POINTCLOUD2_RELAY" == "1" ]] && echo enabled || echo disabled)"
 echo "[preflight] images dir:       $IMAGE_OUT_DIR"
+echo "[preflight] rviz enabled:     ${RVIZ_ARG_VALUE}"
 
+SELECTED_MASTER_PORT="$(choose_master_port "$MASTER_PORT")" || {
+  echo "ERROR: Could not find a free ROS master port starting at $MASTER_PORT" >&2
+  exit 2
+}
+if [[ "$SELECTED_MASTER_PORT" != "$MASTER_PORT" ]]; then
+  echo "[preflight] requested ROS master port $MASTER_PORT is busy; using $SELECTED_MASTER_PORT instead"
+fi
+MASTER_PORT="$SELECTED_MASTER_PORT"
 export ROS_MASTER_URI="http://127.0.0.1:${MASTER_PORT}"
 export ROS_HOME="${ROS_HOME:-$LOG_DIR/ros_home_${RUN_ID}}"
 mkdir -p "$ROS_HOME"
@@ -225,6 +378,7 @@ cleanup() {
   echo "[cleanup] stopping sampler/bag/fastlio/roscore..."
   [[ -n "${SAMPLER_PID:-}" ]] && kill "$SAMPLER_PID" 2>/dev/null || true
   [[ -n "${ROSBAG_EXPECT_PID:-}" ]] && kill "$ROSBAG_EXPECT_PID" 2>/dev/null || true
+  [[ -n "${CONVERTER_PID:-}" ]] && kill "$CONVERTER_PID" 2>/dev/null || true
   [[ -n "${FASTLIO_PID:-}" ]] && kill "$FASTLIO_PID" 2>/dev/null || true
 
   rosnode kill -a >/dev/null 2>&1 || true
@@ -266,20 +420,55 @@ rosparam set /use_sim_time false
 rosparam set /use_sim_time true
 
 echo "[2/6] Start FAST-LIO..."
+if (( USE_LIVOX_POINTCLOUD2_RELAY == 1 )); then
+  : > "$CONVERTER_LOG"
+  python3 "$RUNTIME_HOME/ws_livox/scripts/livox_pointcloud2_to_custommsg.py" \
+    _input_topic:="$LIDAR_RAW_TOPIC" \
+    _output_topic:="$LIDAR_TOPIC" >"$CONVERTER_LOG" 2>&1 &
+  CONVERTER_PID=$!
+  echo "  livox relay log: $CONVERTER_LOG"
+  sleep 1
+  if ! kill -0 "$CONVERTER_PID" 2>/dev/null; then
+    echo "ERROR: Livox PointCloud2 relay exited before rosbag replay. See: $CONVERTER_LOG" >&2
+    exit 2
+  fi
+fi
+if ! resolve_fastlio_command; then
+  echo "ERROR: Could not resolve FAST-LIO launch file '${FASTLIO_LAUNCH}'." >&2
+  echo "  RUNTIME_HOME=$RUNTIME_HOME" >&2
+  echo "  ROS_PACKAGE_PATH=${ROS_PACKAGE_PATH:-}" >&2
+  exit 2
+fi
 : > "$FASTLIO_LOG"
-"${FASTLIO_CMD[@]}" >"$FASTLIO_LOG" 2>&1 &
+{
+  echo "[fastlio] RUNTIME_HOME=$RUNTIME_HOME"
+  echo "[fastlio] ROS_PACKAGE_PATH=${ROS_PACKAGE_PATH:-}"
+  if rospack find "$FASTLIO_PKG" >/dev/null 2>&1; then
+    echo "[fastlio] rospack find $FASTLIO_PKG => $(rospack find "$FASTLIO_PKG")"
+  else
+    echo "[fastlio] rospack find $FASTLIO_PKG => <not found>"
+  fi
+  echo "[fastlio] launch command: ${FASTLIO_CMD[*]}"
+} >>"$FASTLIO_LOG"
+"${FASTLIO_CMD[@]}" >>"$FASTLIO_LOG" 2>&1 &
 FASTLIO_PID=$!
 echo "  fast-lio log: $FASTLIO_LOG"
+sleep 2
+if ! kill -0 "$FASTLIO_PID" 2>/dev/null; then
+  echo "ERROR: FAST-LIO exited before rosbag replay. See: $FASTLIO_LOG" >&2
+  exit 2
+fi
 
 echo "[3/6] Start camera/GPS TF sampler..."
 SAMPLER_CMD=(
   python3
-  "$HOME/ws_livox/scripts/tf_sample_camera_gps.py"
+  "$RUNTIME_HOME/ws_livox/scripts/tf_sample_camera_gps.py"
   --camera-out-csv "$CAMERA_OUT_CSV"
   --gps-out-csv "$GPS_OUT_CSV"
   --image-output-dir "$IMAGE_OUT_DIR"
   --image-timestamps-csv "$IMAGE_TIMESTAMPS_CSV"
   --discovery-timeout-wall-sec "$DISCOVERY_TIMEOUT_WALL_SEC"
+  --camera-time-offset-sec "$CAMERA_TIME_OFFSET_SEC"
 )
 if [[ -n "$IMAGE_TOPIC" ]]; then
   SAMPLER_CMD+=(--image-topic "$IMAGE_TOPIC")
@@ -341,6 +530,12 @@ if [[ -n "${ROSBAG_EXPECT_PID:-}" ]]; then
   done
 fi
 
+if rosnode list 2>/dev/null | grep -Fxq "$FASTLIO_NODE_NAME"; then
+  echo "[shutdown] Requesting graceful shutdown of $FASTLIO_NODE_NAME..."
+  rosnode kill "$FASTLIO_NODE_NAME" >/dev/null 2>&1 || true
+  wait_for_rosnode_exit "$FASTLIO_NODE_NAME" 25 || true
+fi
+
 if [[ -n "${FASTLIO_PID:-}" ]]; then
   kill -INT "$FASTLIO_PID" 2>/dev/null || true
   for _ in {1..100}; do
@@ -352,12 +547,18 @@ if [[ -n "${FASTLIO_PID:-}" ]]; then
 fi
 
 PCD_OUT_PATH="$PCD_OUT_DIR/scans.pcd"
-if wait_for_file "$FASTLIO_PCD_FILE" 20; then
+if wait_for_file "$FASTLIO_PCD_FILE" 60; then
   cp "$FASTLIO_PCD_FILE" "$PCD_OUT_PATH"
-echo "[done] PCD copied to: $PCD_OUT_PATH"
+  echo "[done] PCD copied to: $PCD_OUT_PATH"
+elif wait_for_file "$LEGACY_FASTLIO_PCD_FILE" 10; then
+  cp "$LEGACY_FASTLIO_PCD_FILE" "$PCD_OUT_PATH"
+  echo "[done] PCD copied to: $PCD_OUT_PATH"
 else
   echo "WARNING: FAST-LIO PCD file was not found at $FASTLIO_PCD_FILE" >&2
 fi
+
+python3 "$RUNTIME_HOME/ws_livox/scripts/sanitize_pose_recovery_outputs.py" \
+  --gps-csv "$GPS_OUT_CSV"
 
 echo "[done] images dir:   $IMAGE_OUT_DIR"
 echo "[done] image csv:    $IMAGE_TIMESTAMPS_CSV"

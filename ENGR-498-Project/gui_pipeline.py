@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import json
 import urllib.parse
 import webbrowser
 from pathlib import Path
@@ -11,8 +13,9 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from calibration_bridge import export_fusion_calibration_artifacts, resolve_calibration_run
-from project_paths import FUSION_DIR, MATLAB_EXTRACT_DIR, ROSBAG_PREPROCESSING_DIR
+from project_paths import FUSION_DIR, MATLAB_EXTRACT_DIR, PROJECT_ROOT, ROSBAG_PREPROCESSING_DIR
 from scan_metadata import (
+    first_existing_artifact,
     load_scan_metadata,
     newest_directory,
     resolve_artifact_paths,
@@ -21,6 +24,7 @@ from scan_metadata import (
     update_file_entry,
     update_status,
 )
+from timing_settings import resolve_effective_timing
 
 
 RUN_POSE_RECOVERY_SCRIPT = ROSBAG_PREPROCESSING_DIR / "launcher" / "run_transform_reading_workflow.py"
@@ -42,7 +46,33 @@ def _is_port_open(host: str, port: int) -> bool:
         return sock.connect_ex((host, port)) == 0
 
 
-def _convert_point_cloud_to_las(source_path: Path, output_path: Path) -> Path:
+def _extract_prefixed_summary(lines: list[str], prefix: str) -> str | None:
+    for line in lines:
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip()
+    return None
+
+
+def _summarize_calibration_failure(lines: list[str], return_code: int, *, context: str) -> str:
+    preflight_summary = _extract_prefixed_summary(lines, "[preflight] FAIL:")
+    if preflight_summary:
+        return f"{context} failed. {preflight_summary}"
+
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("[preflight]"):
+            continue
+        if stripped.startswith("ERROR:"):
+            return stripped
+        if "failed" in stripped.lower():
+            return stripped
+
+    return f"{context} failed with exit code {return_code}."
+
+
+def convert_point_cloud_to_las(source_path: Path, output_path: Path) -> Path:
     import laspy
     import numpy as np
     import open3d as o3d
@@ -90,7 +120,7 @@ class LeafletServerManager:
 
         self._process = subprocess.Popen(
             [sys.executable, "-m", "http.server", str(self.port)],
-            cwd=str(FUSION_DIR),
+            cwd=str(PROJECT_ROOT),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -100,14 +130,15 @@ class LeafletServerManager:
     def open_map(self, *, objects_json: Path | None = None, powerlines_json: Path | None = None) -> str:
         self.ensure_running()
         params: dict[str, str] = {}
+        params["_viewer"] = "20260409a"
 
         if objects_json is not None and objects_json.exists():
-            params["data"] = os.path.relpath(objects_json, FUSION_DIR).replace("\\", "/")
+            params["data"] = "/" + os.path.relpath(objects_json, PROJECT_ROOT).replace("\\", "/")
         if powerlines_json is not None and powerlines_json.exists():
-            params["powerlines"] = os.path.relpath(powerlines_json, FUSION_DIR).replace("\\", "/")
+            params["powerlines"] = "/" + os.path.relpath(powerlines_json, PROJECT_ROOT).replace("\\", "/")
 
         query = urllib.parse.urlencode(params)
-        url = f"http://localhost:{self.port}/leaflet_viewer/index.html"
+        url = f"http://localhost:{self.port}/fusion/leaflet_viewer/index.html"
         if query:
             url = f"{url}?{query}"
         webbrowser.open(url)
@@ -150,19 +181,54 @@ class CalibrationWorkflowThread(QThread):
             text=True,
         )
         assert process.stdout is not None
+        lines: list[str] = []
         for line in process.stdout:
-            self.logLine.emit(line.rstrip())
+            stripped = line.rstrip()
+            lines.append(stripped)
+            self.logLine.emit(stripped)
         return_code = process.wait()
         if return_code == 0:
             self.completed.emit(self.run_name)
         else:
-            self.failed.emit(f"Calibration workflow failed with exit code {return_code}.")
+            self.failed.emit(_summarize_calibration_failure(lines, return_code, context="Calibration workflow"))
+
+
+class CalibrationPreflightThread(QThread):
+    logLine = Signal(str)
+    completed = Signal(str)
+    failed = Signal(str)
+
+    def run(self) -> None:
+        command = [
+            sys.executable,
+            str(RUN_CALIBRATION_SCRIPT),
+            "--check-only",
+        ]
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        assert process.stdout is not None
+        lines: list[str] = []
+        for line in process.stdout:
+            stripped = line.rstrip()
+            lines.append(stripped)
+            self.logLine.emit(stripped)
+
+        return_code = process.wait()
+        if return_code == 0:
+            summary = _extract_prefixed_summary(lines, "[preflight] PASS:") or "Calibration requirements check passed."
+            self.completed.emit(summary)
+        else:
+            self.failed.emit(_summarize_calibration_failure(lines, return_code, context="Calibration requirements check"))
 
 
 class BackendPipelineThread(QThread):
     logLine = Signal(str)
     stageChanged = Signal(str, str)  # stage_key, status
-    completed = Signal(str)
+    completed = Signal(str, str)
     failed = Signal(str)
 
     def __init__(self, scan_ref: str | Path, *, mode: str = "full", parent=None) -> None:
@@ -190,6 +256,14 @@ class BackendPipelineThread(QThread):
             raise RuntimeError(f"Command failed with exit code {return_code}: {' '.join(command)}")
 
     def _run_pose_recovery(self, scan_dir: Path, metadata: dict) -> Path:
+        pose_cfg = metadata.get("config", {}).get("pose_recovery", {})
+        effective_timing = resolve_effective_timing(metadata)
+        preprocess_offset_enabled = bool(effective_timing.get("preprocess_camera_offset_enabled", False))
+        preprocess_offset_sec = (
+            float(effective_timing.get("preprocess_camera_offset_sec", 0.0))
+            if preprocess_offset_enabled
+            else 0.0
+        )
         files = metadata["files"]
         bag_path = resolve_scan_path(scan_dir, files.get("rosbag"))
         if bag_path is None or not bag_path.is_file():
@@ -209,6 +283,14 @@ class BackendPipelineThread(QThread):
             "--output-root",
             str(output_root),
         ]
+        if pose_cfg.get("enable_rviz"):
+            command.append("--rviz")
+        command.extend(["--camera-time-offset-sec", str(preprocess_offset_sec)])
+        self.emit_log(
+            "[timing] pose-recovery camera offset "
+            f"{'enabled' if preprocess_offset_enabled else 'disabled'} "
+            f"(effective={preprocess_offset_sec:.6f} sec)"
+        )
         self.run_command(command)
 
         latest_run = newest_directory(output_root)
@@ -221,40 +303,86 @@ class BackendPipelineThread(QThread):
         update_file_entry(metadata, scan_dir, "image_timestamps_csv", latest_run / "image_timestamps.csv")
         update_file_entry(metadata, scan_dir, "tf_camera_csv", latest_run / "tf_camera_out.csv")
         update_file_entry(metadata, scan_dir, "tf_gps_csv", latest_run / "tf_gps_out.csv")
-        update_file_entry(metadata, scan_dir, "pcd", latest_run / "pcd" / "scans.pcd")
+
+        timing_config_path = latest_run / "timing_config.json"
+        timing_config_path.write_text(
+            json.dumps(
+                {
+                    "timing": effective_timing,
+                    "effective": {
+                        "preprocess_camera_offset_sec": preprocess_offset_sec,
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        pose_cfg_store = metadata.setdefault("config", {}).setdefault("pose_recovery", {})
+        prev_applied = float(pose_cfg_store.get("last_camera_time_offset_sec", 0.0))
+        prev_enabled = bool(pose_cfg_store.get("last_camera_time_offset_enabled", False))
+        if prev_enabled != preprocess_offset_enabled or abs(prev_applied - preprocess_offset_sec) > 1e-12:
+            update_status(metadata, "inference", "pending")
+            update_status(metadata, "fusion", "pending")
+            self.emit_log("[timing] preprocessing camera offset changed; marked inference and fusion as pending.")
+        pose_cfg_store["last_camera_time_offset_sec"] = preprocess_offset_sec
+        pose_cfg_store["last_camera_time_offset_enabled"] = preprocess_offset_enabled
+
+        # Copy the raw SLAM PCD into processed/point_clouds/raw/ and generate a LAS
+        # conversion alongside it. The pose_recovery output stays untouched as
+        # the source-of-truth raw export.
+        raw_pcd = latest_run / "pcd" / "scans.pcd"
+        raw_dir = scan_dir / "processed" / "point_clouds" / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        working_pcd = raw_dir / "scans.pcd"
+        working_las = raw_dir / "cloud.las"
+        if raw_pcd.is_file():
+            shutil.copy2(str(raw_pcd), str(working_pcd))
+            convert_point_cloud_to_las(working_pcd, working_las)
+        update_file_entry(metadata, scan_dir, "raw_pcd", working_pcd)
+        update_file_entry(metadata, scan_dir, "raw_las", working_las)
+        update_file_entry(metadata, scan_dir, "pcd", working_pcd)
+        update_file_entry(metadata, scan_dir, "las", working_las)
+
         update_status(metadata, "slam", "done")
         save_scan_metadata(scan_dir, metadata)
+        self.emit_log(f"[outputs] pose recovery run: {latest_run}")
+        self.emit_log(f"[outputs] slam point cloud: {latest_run / 'pcd' / 'scans.pcd'}")
+        self.emit_log(f"[outputs] working point cloud: {working_pcd}")
+        self.emit_log(f"[outputs] working LAS: {working_las}")
+        self.emit_log(f"[outputs] image folder: {latest_run / 'images'}")
+        self.emit_log(f"[outputs] camera poses: {latest_run / 'tf_camera_out.csv'}")
+        self.emit_log(f"[outputs] gps poses: {latest_run / 'tf_gps_out.csv'}")
         return latest_run
 
     def _resolve_wire_input_las(self, scan_dir: Path, metadata: dict) -> Path:
-        artifacts = resolve_artifact_paths(scan_dir, metadata)
-        candidates = [
-            ("segmented", scan_dir / "processed" / "flai" / "segmented.las"),
-            ("filtered", scan_dir / "processed" / "filtered" / "cloud_filtered.las"),
-            ("las", scan_dir / "processed" / "slam" / "cloud.las"),
-            ("pcd", scan_dir / "processed" / "slam" / "cloud.las"),
-        ]
-
-        for key, las_target in candidates:
-            candidate = artifacts.get(key)
-            if candidate is None or not candidate.is_file():
-                continue
-
-            suffix = candidate.suffix.lower()
-            if suffix in {".las", ".laz"}:
-                return candidate
-
-            if suffix in {".pcd", ".ply"}:
-                exported = _convert_point_cloud_to_las(candidate, las_target)
-                target_key = key if key in {"filtered", "segmented"} else "las"
-                update_file_entry(metadata, scan_dir, target_key, exported)
-                save_scan_metadata(scan_dir, metadata)
-                return exported
-
-        raise FileNotFoundError(
-            "Wire extraction requires an input point cloud. Expected one of: segmented LAS, filtered LAS, "
-            "generated SLAM LAS, or generated SLAM PCD."
+        point_clouds_dir = scan_dir / "processed" / "point_clouds"
+        key, candidate = first_existing_artifact(
+            scan_dir,
+            metadata,
+            ("segmented", "filtered_las", "raw_las", "filtered_pcd", "raw_pcd"),
         )
+        if candidate is None or key is None:
+            raise FileNotFoundError(
+                "Wire extraction requires an input point cloud. Expected one of: segmented LAS, "
+                "filtered LAS, raw LAS, filtered PCD, or raw PCD."
+            )
+
+        suffix = candidate.suffix.lower()
+        if suffix in {".las", ".laz"}:
+            return candidate
+
+        if suffix in {".pcd", ".ply"}:
+            las_name = "cloud_filtered.las" if key == "filtered_pcd" else "cloud.las"
+            exported = convert_point_cloud_to_las(candidate, point_clouds_dir / las_name)
+            target_key = "filtered_las" if key == "filtered_pcd" else "raw_las"
+            update_file_entry(metadata, scan_dir, target_key, exported)
+            if target_key == "raw_las":
+                update_file_entry(metadata, scan_dir, "las", exported)
+            save_scan_metadata(scan_dir, metadata)
+            return exported
+
+        raise FileNotFoundError(f"Unsupported wire-extraction point cloud type: {candidate}")
 
     def _export_powerline_overlay(self, scan_dir: Path, metadata: dict) -> Path | None:
         artifacts = resolve_artifact_paths(scan_dir, metadata)
@@ -290,6 +418,7 @@ class BackendPipelineThread(QThread):
             return
 
         config = metadata.get("config", {})
+        gps_cfg = config.get("gps", {})
         gps_output_dir = scan_dir / "processed" / "fusion" / "gps"
         gps_output_dir.mkdir(parents=True, exist_ok=True)
         georef_command = [
@@ -301,6 +430,8 @@ class BackendPipelineThread(QThread):
             str(gps_output_dir),
             "--gps-to-lidar-offset-body",
             str(config.get("gps", {}).get("offset_body_xyz_m", "0,0,0")),
+            "--max-horizontal-cov-m2",
+            str(gps_cfg.get("max_horizontal_cov_m2", 1000.0)),
         ]
         if objects_json is not None and objects_json.is_file():
             georef_command.extend(["--objects-json", str(objects_json)])
@@ -339,6 +470,7 @@ class BackendPipelineThread(QThread):
         update_file_entry(metadata, scan_dir, "ground_points", output_dir / "ground_points.npz")
         update_status(metadata, "wire_extraction", "done")
         save_scan_metadata(scan_dir, metadata)
+        self.emit_log(f"[outputs] wire extraction dir: {output_dir}")
 
         powerline_overlay = self._export_powerline_overlay(scan_dir, metadata)
         tf_gps_path = resolve_scan_path(scan_dir, metadata["files"].get("tf_gps_csv"))
@@ -415,11 +547,26 @@ class BackendPipelineThread(QThread):
             update_file_entry(metadata, scan_dir, "pred_images_dir", pred_images_dir)
         update_status(metadata, "inference", "done")
         save_scan_metadata(scan_dir, metadata)
+        self.emit_log(f"[outputs] inference dir: {yolo_output_dir}")
         return yolo_output_dir, masks_dir, meta_dir
 
     def _run_yolo_and_fusion(self, scan_dir: Path, metadata: dict, pose_run: Path) -> None:
         config = metadata.get("config", {})
         fusion_cfg = config.get("fusion", {})
+        effective_timing = resolve_effective_timing(metadata)
+        fusion_offset_enabled = bool(effective_timing.get("fusion_time_offset_enabled", False))
+        fusion_offset_sec = (
+            float(effective_timing.get("fusion_time_offset_sec", 0.0))
+            if fusion_offset_enabled
+            else 0.0
+        )
+        self.emit_log(
+            "[timing] fusion offset "
+            f"{'enabled' if fusion_offset_enabled else 'disabled'} "
+            f"(effective={fusion_offset_sec:.6f} sec)"
+        )
+        if bool(effective_timing.get("preprocess_camera_offset_enabled", False)) and fusion_offset_enabled:
+            self.emit_log("[timing] both preprocessing and fusion offsets are enabled for this run.")
 
         masks_dir = resolve_scan_path(scan_dir, metadata.get("files", {}).get("masks_dir"))
         meta_dir = resolve_scan_path(scan_dir, metadata.get("files", {}).get("meta_dir"))
@@ -430,6 +577,15 @@ class BackendPipelineThread(QThread):
             save_scan_metadata(scan_dir, metadata)
 
         intrinsics_path, extrinsics_path = self._resolve_calibration_artifacts(scan_dir, metadata)
+        _, fusion_point_cloud = first_existing_artifact(
+            scan_dir,
+            metadata,
+            ("filtered_pcd", "raw_pcd", "pcd"),
+        )
+        if fusion_point_cloud is None:
+            raise FileNotFoundError(
+                "Fusion requires a point cloud. Expected one of: filtered PCD, raw PCD, or a legacy pcd entry."
+            )
 
         fusion_output_dir = scan_dir / "processed" / "fusion"
         fusion_output_dir.mkdir(parents=True, exist_ok=True)
@@ -446,7 +602,7 @@ class BackendPipelineThread(QThread):
             "--image-timestamps-csv",
             str(pose_run / "image_timestamps.csv"),
             "--point-cloud",
-            str(pose_run / "pcd" / "scans.pcd"),
+            str(fusion_point_cloud),
             "--mask-dir",
             str(masks_dir),
             "--meta-dir",
@@ -458,9 +614,11 @@ class BackendPipelineThread(QThread):
             "--image-filename-column",
             "filename",
             "--time-offset-sec",
-            str(fusion_cfg.get("time_offset_sec", 0.0)),
+            str(fusion_offset_sec),
             "--no-visualize",
         ]
+        if fusion_offset_enabled:
+            fusion_command.append("--time-offset-enabled")
         self.run_command(fusion_command)
 
         update_file_entry(metadata, scan_dir, "fused_objects", fusion_output_dir / "fused_objects.json")
@@ -482,6 +640,7 @@ class BackendPipelineThread(QThread):
 
         update_status(metadata, "fusion", "done")
         save_scan_metadata(scan_dir, metadata)
+        self.emit_log(f"[outputs] fusion dir: {fusion_output_dir}")
 
     def run(self) -> None:
         active_stage = "fusion"
@@ -525,7 +684,7 @@ class BackendPipelineThread(QThread):
                 self._run_yolo_and_fusion(scan_dir, metadata, pose_run)
                 self.stageChanged.emit("fusion", "done")
 
-            self.completed.emit(str(scan_dir))
+            self.completed.emit(str(scan_dir), self.mode)
         except ColabFallbackRequiredError as exc:
             self.stageChanged.emit(active_stage, "pending")
             self.failed.emit(str(exc))

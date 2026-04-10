@@ -101,6 +101,21 @@ function normalizePowerlineFeature(powerline) {
   };
 }
 
+function normalizeGalleryFrames(feature) {
+  const frames = feature.image_gallery && Array.isArray(feature.image_gallery.frames)
+    ? feature.image_gallery.frames
+    : [];
+  const deduped = new Map();
+  for (const frame of frames) {
+    const key = String(frame.frame_name || "");
+    const current = deduped.get(key);
+    if (!current || Number(frame.support_point_count || 0) > Number(current.support_point_count || 0)) {
+      deduped.set(key, frame);
+    }
+  }
+  return Array.from(deduped.values());
+}
+
 function buildPopupHtml(feature) {
   const centroid = feature.centroid_map_xyz || [null, null, null];
   const bboxMin = feature.bbox_aabb_min_xyz || [null, null, null];
@@ -148,6 +163,120 @@ function createStatusBanner(text) {
   banner.className = "status-banner";
   banner.textContent = text;
   return banner;
+}
+
+function renderFeatureDetail(feature) {
+  const container = document.getElementById("feature-detail");
+  const centroid = feature.centroid_map_xyz || [null, null, null];
+  const bboxMin = feature.bbox_aabb_min_xyz || [null, null, null];
+  const bboxMax = feature.bbox_aabb_max_xyz || [null, null, null];
+
+  if (feature.feature_kind !== "object") {
+    container.innerHTML = `
+      <div class="detail-block">
+        <div class="detail-title">${escapeHtml(featureDisplayName(feature))}</div>
+        <div class="detail-meta">Powerline metadata is shown in the popup only. Image galleries are only available for fused objects.</div>
+      </div>
+    `;
+    return;
+  }
+
+  const frames = normalizeGalleryFrames(feature);
+  const defaultMode = feature.image_gallery && feature.image_gallery.default_mode
+    ? feature.image_gallery.default_mode
+    : "predicted";
+  const initialFrame = frames[0] || null;
+
+  container.innerHTML = `
+    <div class="detail-block">
+      <div class="detail-title">${escapeHtml(featureDisplayName(feature))}</div>
+      <div class="detail-grid">
+        <div><span class="detail-label">Class</span><span>${escapeHtml(feature.class_name || "N/A")}</span></div>
+        <div><span class="detail-label">Confidence</span><span>${formatMaybeNumber(feature.confidence_score, 2)}</span></div>
+        <div><span class="detail-label">Points</span><span>${feature.num_points ?? "N/A"}</span></div>
+        <div><span class="detail-label">Frames</span><span>${frames.length}</span></div>
+      </div>
+      <div class="detail-meta">
+        Centroid XYZ: ${formatMaybeNumber(centroid[0])}, ${formatMaybeNumber(centroid[1])}, ${formatMaybeNumber(centroid[2])}<br>
+        BBox Min: ${formatMaybeNumber(bboxMin[0])}, ${formatMaybeNumber(bboxMin[1])}, ${formatMaybeNumber(bboxMin[2])}<br>
+        BBox Max: ${formatMaybeNumber(bboxMax[0])}, ${formatMaybeNumber(bboxMax[1])}, ${formatMaybeNumber(bboxMax[2])}
+      </div>
+    </div>
+    <div class="detail-block">
+      <div class="mode-toggle" role="tablist" aria-label="Image mode">
+        <button type="button" class="mode-button" data-mode="predicted">Predicted</button>
+        <button type="button" class="mode-button" data-mode="raw">Raw</button>
+      </div>
+      <div class="preview-shell">
+        <img id="detail-preview-image" class="detail-preview-image" alt="Selected object preview">
+        <div id="detail-preview-empty" class="detail-preview-empty">No associated images for this object.</div>
+      </div>
+      <div id="detail-preview-caption" class="detail-preview-caption"></div>
+      <div id="detail-gallery" class="detail-gallery"></div>
+    </div>
+  `;
+
+  const modeButtons = Array.from(container.querySelectorAll(".mode-button"));
+  const previewImage = container.querySelector("#detail-preview-image");
+  const previewEmpty = container.querySelector("#detail-preview-empty");
+  const previewCaption = container.querySelector("#detail-preview-caption");
+  const gallery = container.querySelector("#detail-gallery");
+  let mode = defaultMode === "raw" ? "raw" : "predicted";
+  let activeFrame = initialFrame;
+
+  function frameImagePath(frame) {
+    return mode === "raw" ? frame.raw_image_url : frame.pred_image_url;
+  }
+
+  function renderPreview() {
+    if (!activeFrame || !frameImagePath(activeFrame)) {
+      previewImage.removeAttribute("src");
+      previewImage.style.display = "none";
+      previewEmpty.style.display = "flex";
+      previewCaption.textContent = "";
+      return;
+    }
+    previewImage.src = frameImagePath(activeFrame);
+    previewImage.style.display = "block";
+    previewEmpty.style.display = "none";
+    previewCaption.textContent =
+      `${activeFrame.frame_name} | support ${activeFrame.support_point_count} pts | conf ${formatMaybeNumber(activeFrame.confidence, 2)}`;
+  }
+
+  function renderGallery() {
+    gallery.innerHTML = "";
+    for (const frame of frames) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = `gallery-item${activeFrame === frame ? " active" : ""}`;
+      const path = frameImagePath(frame);
+      item.innerHTML = `
+        <img src="${escapeHtml(path || "")}" alt="${escapeHtml(frame.frame_name)}">
+        <span>${escapeHtml(frame.frame_name)}</span>
+      `;
+      item.addEventListener("click", () => {
+        activeFrame = frame;
+        renderPreview();
+        renderGallery();
+      });
+      gallery.appendChild(item);
+    }
+  }
+
+  for (const button of modeButtons) {
+    button.classList.toggle("active", button.dataset.mode === mode);
+    button.addEventListener("click", () => {
+      mode = button.dataset.mode === "raw" ? "raw" : "predicted";
+      for (const item of modeButtons) {
+        item.classList.toggle("active", item.dataset.mode === mode);
+      }
+      renderPreview();
+      renderGallery();
+    });
+  }
+
+  renderPreview();
+  renderGallery();
 }
 
 async function fetchJson(path) {
@@ -248,7 +377,7 @@ function createFeatureList(features, onSelect) {
   render();
 }
 
-function addFeatureToLocalMap(feature, layers) {
+function addFeatureToLocalMap(feature, layers, onSelect) {
   const color = rgbString(feature.class_color_rgb || [100, 100, 100]);
   const centroid = feature.centroid_map_xyz || [null, null, null];
 
@@ -262,6 +391,7 @@ function addFeatureToLocalMap(feature, layers) {
       })
         .bindPopup(buildPopupHtml(feature))
         .addTo(layers.features);
+      line.on("click", () => onSelect(feature));
 
       const labelAnchor = latLngs[Math.floor(latLngs.length / 2)];
       const label = L.marker(labelAnchor, {
@@ -295,6 +425,7 @@ function addFeatureToLocalMap(feature, layers) {
   })
     .bindPopup(buildPopupHtml(feature))
     .addTo(layers.features);
+  marker.on("click", () => onSelect(feature));
 
   const label = L.marker(latLng, {
     interactive: false,
@@ -311,7 +442,7 @@ function addFeatureToLocalMap(feature, layers) {
   feature.__popupLatLng = latLng;
 }
 
-function addFeatureToGpsMap(feature, map) {
+function addFeatureToGpsMap(feature, map, onSelect) {
   const color = rgbString(feature.class_color_rgb || [100, 100, 100]);
 
   if (feature.feature_kind === "powerline") {
@@ -324,6 +455,7 @@ function addFeatureToGpsMap(feature, map) {
       })
         .bindPopup(buildPopupHtml(feature))
         .addTo(map);
+      line.on("click", () => onSelect(feature));
 
       const labelAnchor = latLngs[Math.floor(latLngs.length / 2)];
       const label = L.marker(labelAnchor, {
@@ -357,6 +489,7 @@ function addFeatureToGpsMap(feature, map) {
   })
     .bindPopup(buildPopupHtml(feature))
     .addTo(map);
+  marker.on("click", () => onSelect(feature));
 
   const label = L.marker(latLng, {
     interactive: false,
@@ -373,7 +506,7 @@ function addFeatureToGpsMap(feature, map) {
   feature.__popupLatLng = latLng;
 }
 
-function setupLocalMap(features) {
+function setupLocalMap(features, onSelect) {
   const map = L.map("map", {
     crs: L.CRS.Simple,
     zoomControl: true,
@@ -388,7 +521,7 @@ function setupLocalMap(features) {
 
   const boundsList = [];
   for (const feature of features) {
-    addFeatureToLocalMap(feature, layers);
+    addFeatureToLocalMap(feature, layers, onSelect);
     if (feature.__focusBounds && feature.__focusBounds.isValid()) {
       boundsList.push(feature.__focusBounds);
     }
@@ -413,7 +546,7 @@ function setupLocalMap(features) {
   return map;
 }
 
-function setupGpsMap(features) {
+function setupGpsMap(features, onSelect) {
   const map = L.map("map", {
     zoomControl: true,
     preferCanvas: true
@@ -427,7 +560,7 @@ function setupGpsMap(features) {
 
   const boundsList = [];
   for (const feature of features) {
-    addFeatureToGpsMap(feature, map);
+    addFeatureToGpsMap(feature, map, onSelect);
     if (feature.__focusBounds && feature.__focusBounds.isValid()) {
       boundsList.push(feature.__focusBounds);
     }
@@ -460,6 +593,7 @@ function selectFeature(map, feature) {
   if (feature.__leafletLayer && typeof feature.__leafletLayer.openPopup === "function") {
     feature.__leafletLayer.openPopup(feature.__popupLatLng);
   }
+  renderFeatureDetail(feature);
 }
 
 async function main() {
@@ -479,8 +613,11 @@ async function main() {
     const gpsMode = features.some(
       (feature) => hasGpsPoint(feature) || getGpsPolylineLatLngs(feature).length >= 2
     );
-    const map = gpsMode ? setupGpsMap(features) : setupLocalMap(features);
-    createFeatureList(features, (feature) => selectFeature(map, feature));
+    let map;
+    const handleSelect = (feature) => selectFeature(map, feature);
+    map = gpsMode ? setupGpsMap(features, handleSelect) : setupLocalMap(features, handleSelect);
+    createFeatureList(features, handleSelect);
+    renderFeatureDetail(objectFeatures[0] || powerlineFeatures[0] || { feature_kind: "empty", object_name: "None" });
   } catch (error) {
     document.getElementById("map-mode").textContent = "Error";
     document.getElementById("object-list").innerHTML = `<div class="object-card">${escapeHtml(error.message)}</div>`;

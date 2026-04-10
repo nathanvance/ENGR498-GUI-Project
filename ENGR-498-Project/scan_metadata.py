@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -19,9 +20,12 @@ DEFAULT_STATUS = {
 
 DEFAULT_FILES = {
     "rosbag": "",
-    "las": "processed/slam/cloud.las",
-    "pcd": "processed/slam/scans.pcd",
-    "filtered": "processed/filtered/cloud_filtered.las",
+    "raw_las": "processed/point_clouds/raw/cloud.las",
+    "raw_pcd": "processed/point_clouds/raw/scans.pcd",
+    "filtered_las": "processed/point_clouds/filtered/cloud.las",
+    "filtered_pcd": "processed/point_clouds/filtered/scans.pcd",
+    "las": "processed/point_clouds/raw/cloud.las",
+    "pcd": "processed/point_clouds/raw/scans.pcd",
     "segmented": "processed/flai/segmented.las",
     "wires_points": "processed/wires/wires_points.npz",
     "wire_info": "processed/wires/wire_info.json",
@@ -53,6 +57,9 @@ DEFAULT_FILES = {
 }
 
 DEFAULT_CONFIG = {
+    "pose_recovery": {
+        "enable_rviz": False,
+    },
     "inference": {
         "runtime": "local",
         "weights": "",
@@ -61,10 +68,12 @@ DEFAULT_CONFIG = {
     },
     "fusion": {
         "calibration_run_dir": "",
+        "time_offset_sec": 0.0,
     },
     "gps": {
         "offset_body_xyz_m": "0,0,0",
     },
+    "timing_overrides": {},
 }
 
 DEFAULT_WIRE_PARAMS = {
@@ -94,6 +103,8 @@ def resolve_scan_dir(scan_ref: str | Path) -> Path:
     for candidate in [current, *current.parents]:
         if (candidate / "metadata.json").is_file():
             return candidate
+    if current.exists() and current.is_dir():
+        return current
     raise FileNotFoundError(f"Could not resolve scan directory from {scan_ref}")
 
 
@@ -127,8 +138,9 @@ def ensure_scan_structure(scan_dir: Path) -> None:
     for rel in (
         "raw",
         "raw/images",
-        "processed/slam",
-        "processed/filtered",
+        "processed/point_clouds",
+        "processed/point_clouds/raw",
+        "processed/point_clouds/filtered",
         "processed/flai",
         "processed/wires",
         "processed/fusion",
@@ -137,6 +149,83 @@ def ensure_scan_structure(scan_dir: Path) -> None:
         "processed/pose_recovery",
     ):
         (scan_dir / rel).mkdir(parents=True, exist_ok=True)
+
+
+def migrate_legacy_layout(scan_dir: Path, metadata: dict[str, Any]) -> bool:
+    """Migrate per-scan directories from processed/slam + processed/filtered
+    to the new processed/point_clouds layout. Idempotent.
+
+    Returns True if anything was changed (so the caller can persist metadata).
+    """
+    changed = False
+    processed_dir = scan_dir / "processed"
+    legacy_slam = processed_dir / "slam"
+    legacy_filtered = processed_dir / "filtered"
+    point_clouds_dir = processed_dir / "point_clouds"
+
+    if legacy_slam.is_dir():
+        raw_dir = point_clouds_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("scans.pcd", "cloud.las"):
+            src = legacy_slam / name
+            if src.is_file():
+                dst = raw_dir / name
+                if not dst.exists():
+                    shutil.move(str(src), str(dst))
+                    changed = True
+        try:
+            if not any(legacy_slam.iterdir()):
+                legacy_slam.rmdir()
+                changed = True
+        except OSError:
+            pass
+
+    legacy_filtered_las = legacy_filtered / "cloud_filtered.las"
+    if legacy_filtered_las.is_file():
+        filtered_dir = point_clouds_dir / "filtered"
+        filtered_dir.mkdir(parents=True, exist_ok=True)
+        target_las = filtered_dir / "cloud.las"
+        if (
+            not target_las.exists()
+            or target_las.stat().st_mtime < legacy_filtered_las.stat().st_mtime
+        ):
+            shutil.copy2(str(legacy_filtered_las), str(target_las))
+            changed = True
+
+    files_value = metadata.get("files")
+    if isinstance(files_value, dict):
+        for key in ("las", "pcd", "raw_las", "raw_pcd"):
+            raw = files_value.get(key)
+            if isinstance(raw, str) and raw.startswith("processed/slam/"):
+                files_value[key] = raw.replace(
+                    "processed/slam/", "processed/point_clouds/raw/", 1
+                )
+                changed = True
+
+        filtered_las = files_value.get("filtered_las")
+        if not isinstance(filtered_las, str) or not filtered_las:
+            filtered_value = files_value.get("filtered")
+            if isinstance(filtered_value, str) and filtered_value:
+                files_value["filtered_las"] = filtered_value.replace(
+                    "processed/filtered/",
+                    "processed/point_clouds/filtered/",
+                    1,
+                )
+                changed = True
+
+        if "filtered" in files_value:
+            files_value.pop("filtered")
+            changed = True
+
+    return changed
+
+
+def _normalize_file_path_text(value: str) -> str:
+    cleaned = value
+    repeated = "processed/point_clouds/processed/point_clouds/"
+    while repeated in cleaned:
+        cleaned = cleaned.replace(repeated, "processed/point_clouds/", 1)
+    return cleaned
 
 
 def _normalize_metadata(scan_dir: Path, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -154,11 +243,30 @@ def _normalize_metadata(scan_dir: Path, metadata: dict[str, Any]) -> dict[str, A
         files_dict = {}
     normalized["files"] = _deep_merge_dict(DEFAULT_FILES, files_dict)
 
+    files_dict = normalized["files"]
+    for key, value in list(files_dict.items()):
+        if isinstance(value, str):
+            files_dict[key] = _normalize_file_path_text(value)
+    if not files_dict.get("raw_las") and files_dict.get("las"):
+        files_dict["raw_las"] = files_dict["las"]
+    if not files_dict.get("raw_pcd") and files_dict.get("pcd"):
+        files_dict["raw_pcd"] = files_dict["pcd"]
+    if not files_dict.get("las") and files_dict.get("raw_las"):
+        files_dict["las"] = files_dict["raw_las"]
+    if not files_dict.get("pcd") and files_dict.get("raw_pcd"):
+        files_dict["pcd"] = files_dict["raw_pcd"]
+
     status_value = normalized.get("status", {})
-    normalized["status"] = _deep_merge_dict(DEFAULT_STATUS, status_value if isinstance(status_value, dict) else {})
+    normalized["status"] = _deep_merge_dict(
+        DEFAULT_STATUS,
+        status_value if isinstance(status_value, dict) else {},
+    )
 
     config_value = normalized.get("config", {})
-    normalized["config"] = _deep_merge_dict(DEFAULT_CONFIG, config_value if isinstance(config_value, dict) else {})
+    normalized["config"] = _deep_merge_dict(
+        DEFAULT_CONFIG,
+        config_value if isinstance(config_value, dict) else {},
+    )
 
     wire_params = normalized.get("wire_params", {})
     normalized["wire_params"] = _deep_merge_dict(
@@ -180,7 +288,10 @@ def load_scan_metadata(scan_ref: str | Path) -> tuple[Path, dict[str, Any]]:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     else:
         metadata = {"name": scan_dir.name}
+    migrated = migrate_legacy_layout(scan_dir, metadata)
     normalized = _normalize_metadata(scan_dir, metadata)
+    if migrated:
+        metadata_path.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
     return scan_dir, normalized
 
 
@@ -202,6 +313,19 @@ def resolve_artifact_paths(scan_dir: Path, metadata: dict[str, Any]) -> dict[str
         )
         if resolved is not None
     }
+
+
+def first_existing_artifact(
+    scan_dir: Path,
+    metadata: dict[str, Any],
+    keys: tuple[str, ...] | list[str],
+) -> tuple[str | None, Path | None]:
+    artifacts = resolve_artifact_paths(scan_dir, metadata)
+    for key in keys:
+        candidate = artifacts.get(key)
+        if candidate is not None and candidate.exists():
+            return key, candidate
+    return None, None
 
 
 def update_file_entry(metadata: dict[str, Any], scan_dir: Path, key: str, target: str | Path | None) -> None:

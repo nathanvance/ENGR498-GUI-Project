@@ -71,6 +71,20 @@ def normalize_workflow_args(mode: str, workflow_args: list[str]) -> list[str]:
     return normalized
 
 
+def derive_windows_root(container_args: list[str]) -> str:
+    drives: set[str] = set()
+    for arg in container_args:
+        match = re.match(r"^/mnt/([A-Za-z])(?:/|$)", arg)
+        if match:
+            drives.add(match.group(1).lower())
+
+    if not drives:
+        return "/mnt/c"
+    if len(drives) == 1:
+        return f"/mnt/{next(iter(drives))}"
+    return "/mnt"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Launch the portable ROS Docker workflows through WSL.")
     parser.add_argument("mode", choices=["calibration", "pose-recovery", "bash"])
@@ -79,6 +93,7 @@ def main() -> int:
 
     project_root_wsl = to_wsl_path(WINDOWS_PROJECT_ROOT)
     normalized_args = normalize_workflow_args(args.mode, list(args.args))
+    windows_root = derive_windows_root(normalized_args)
     compose_args = " ".join(
         shlex.quote(arg)
         for arg in ["compose", "run", "-T", "--rm", "portable-ros-stack", "bash", "./docker/run_pipeline.sh", args.mode, *normalized_args]
@@ -91,7 +106,7 @@ def main() -> int:
     docker_cmd = (
         f"cd {shlex.quote(project_root_wsl)} && "
         f"{docker_selector} && "
-        f"\"\\$DOCKER_CMD\" {compose_args}"
+        f"PORTABLE_ROS_WINDOWS_ROOT={shlex.quote(windows_root)} \"\\$DOCKER_CMD\" {compose_args}"
     )
     return run_wsl(docker_cmd)
 

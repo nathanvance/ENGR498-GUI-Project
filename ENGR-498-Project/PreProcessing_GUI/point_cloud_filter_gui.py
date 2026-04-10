@@ -1,16 +1,217 @@
 import numpy as np
 import laspy
+import open3d as o3d
 import pyvista as pv
+from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel,
     QSlider, QSpinBox, QDoubleSpinBox, QGroupBox, QCheckBox,
     QSplitter, QFileDialog, QMessageBox, QScrollArea
 )
 from PySide6.QtGui import QUndoStack, QUndoCommand
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal, QTimer, QThread
 from pyvistaqt import QtInteractor
 from scipy.spatial import cKDTree
-import threading
+
+try:
+    from native import pointcloud_filter_accel as pc_accel
+except Exception:
+    pc_accel = None
+
+
+class FilterWorker(QThread):
+    finished = Signal(object, object, object, object, str)
+    failed = Signal(str)
+
+    def __init__(self, op_name: str, xyz, colors, intensity, normals, **params):
+        super().__init__()
+        self.op_name = op_name
+        self.xyz = np.ascontiguousarray(xyz, dtype=np.float64)
+        self.colors = None if colors is None else np.ascontiguousarray(colors)
+        self.intensity = None if intensity is None else np.ascontiguousarray(intensity)
+        self.normals = None if normals is None else np.ascontiguousarray(normals, dtype=np.float64)
+        self.params = params
+
+    def run(self):
+        try:
+            xyz = self.xyz
+            colors = self.colors
+            intensity = self.intensity
+            normals = self.normals
+
+            if self.op_name == "downsample":
+                voxel_size = float(self.params["voxel_size"])
+                if pc_accel is not None:
+                    indices = pc_accel.voxel_downsample_indices(xyz, voxel_size)
+                    xyz = xyz[indices]
+                    colors = colors[indices] if colors is not None else None
+                    intensity = intensity[indices] if intensity is not None else None
+                    normals = normals[indices] if normals is not None else None
+                else:
+                    voxel_indices = np.floor(xyz / voxel_size).astype(np.int32)
+                    _, indices = np.unique(voxel_indices, axis=0, return_index=True)
+                    xyz = xyz[indices]
+                    colors = colors[indices] if colors is not None else None
+                    intensity = intensity[indices] if intensity is not None else None
+                    normals = normals[indices] if normals is not None else None
+            elif self.op_name == "sor":
+                n = int(self.params["n_neighbors"])
+                std = float(self.params["std_multiplier"])
+                cloud = o3d.geometry.PointCloud()
+                cloud.points = o3d.utility.Vector3dVector(xyz)
+                indices = cloud.remove_statistical_outlier(n, std)[1]
+                xyz = xyz[indices]
+                colors = colors[indices] if colors is not None else None
+                intensity = intensity[indices] if intensity is not None else None
+                normals = normals[indices] if normals is not None else None
+            elif self.op_name == "ror":
+                radius = float(self.params["radius"])
+                min_nb = int(self.params["min_neighbors"])
+                cloud = o3d.geometry.PointCloud()
+                cloud.points = o3d.utility.Vector3dVector(xyz)
+                indices = cloud.remove_radius_outlier(min_nb, radius)[1]
+                xyz = xyz[indices]
+                colors = colors[indices] if colors is not None else None
+                intensity = intensity[indices] if intensity is not None else None
+                normals = normals[indices] if normals is not None else None
+            elif self.op_name == "sla":
+                k = int(self.params["k"])
+                strength = float(self.params["strength"])
+                if len(xyz) < k + 1:
+                    self.finished.emit(xyz, colors, intensity, normals, "sla")
+                    return
+                tree = cKDTree(xyz)
+                _, indices = tree.query(xyz, k=k + 1)
+                neighbor_centroids = xyz[indices[:, 1:]].mean(axis=1)
+                xyz = xyz + strength * (neighbor_centroids - xyz)
+                colors = None if colors is None else colors.copy()
+                intensity = None if intensity is None else intensity.copy()
+                normals = None if normals is None else normals.copy()
+            elif self.op_name == "crop":
+                bounds = self.params["bounds"]
+                if pc_accel is not None:
+                    mask = pc_accel.crop_mask(xyz, *bounds)
+                else:
+                    xmin, xmax, ymin, ymax, zmin, zmax = bounds
+                    mask = (
+                        (xyz[:, 0] >= xmin) & (xyz[:, 0] <= xmax) &
+                        (xyz[:, 1] >= ymin) & (xyz[:, 1] <= ymax) &
+                        (xyz[:, 2] >= zmin) & (xyz[:, 2] <= zmax)
+                    )
+                xyz = xyz[mask]
+                colors = colors[mask] if colors is not None else None
+                intensity = intensity[mask] if intensity is not None else None
+                normals = normals[mask] if normals is not None else None
+            else:
+                raise ValueError(f"Unknown filter op: {self.op_name}")
+
+            self.finished.emit(xyz, colors, intensity, normals, self.op_name)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class LoadWorker(QThread):
+    finished = Signal(object, object, object, object, str)
+    failed = Signal(str)
+
+    def __init__(self, filename: str):
+        super().__init__()
+        self.filename = filename
+
+    def run(self):
+        try:
+            suffix = str(self.filename).lower()
+            if suffix.endswith((".las", ".laz")):
+                las = laspy.read(self.filename)
+                xyz = np.vstack((las.x, las.y, las.z)).T
+                if hasattr(las, 'red') and hasattr(las, 'green') and hasattr(las, 'blue'):
+                    colors = np.vstack((las.red, las.green, las.blue)).T
+                    if colors.max() > 255:
+                        colors = (colors / 65535 * 255).astype(np.uint8)
+                else:
+                    colors = None
+                intensity = np.array(las.intensity) if hasattr(las, 'intensity') else None
+                normals = np.vstack((las.NormalX, las.NormalY, las.NormalZ)).T if hasattr(las, 'NormalX') and hasattr(las, 'NormalY') and hasattr(las, 'NormalZ') else None
+            elif suffix.endswith((".pcd", ".ply")):
+                cloud = o3d.io.read_point_cloud(str(self.filename))
+                xyz = np.asarray(cloud.points, dtype=np.float64)
+                if xyz.size == 0:
+                    raise ValueError(f"Point cloud is empty: {self.filename}")
+                colors = np.clip(np.asarray(cloud.colors, dtype=np.float64) * 255.0, 0.0, 255.0).astype(np.uint8) if cloud.has_colors() else None
+                intensity = None
+                normals = np.asarray(cloud.normals, dtype=np.float64) if cloud.has_normals() else None
+            else:
+                raise ValueError(f"Unsupported point cloud type: {self.filename}")
+            self.finished.emit(xyz, colors, intensity, normals, self.filename)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class SaveWorker(QThread):
+    finished = Signal(str, str, str)
+    failed = Signal(str)
+
+    def __init__(self, scan_dir: Path, xyz, colors, intensity, normals):
+        super().__init__()
+        self.scan_dir = Path(scan_dir)
+        self.xyz = np.ascontiguousarray(xyz, dtype=np.float64)
+        self.colors = None if colors is None else np.ascontiguousarray(colors)
+        self.intensity = None if intensity is None else np.ascontiguousarray(intensity)
+        self.normals = None if normals is None else np.ascontiguousarray(normals, dtype=np.float64)
+
+    def run(self):
+        try:
+            point_clouds_dir = self.scan_dir / "processed" / "point_clouds" / "filtered"
+            point_clouds_dir.mkdir(parents=True, exist_ok=True)
+            las_output_path = point_clouds_dir / "cloud.las"
+            pcd_output_path = point_clouds_dir / "scans.pcd"
+
+            has_colors = self.colors is not None
+            has_intensity = self.intensity is not None
+            if has_colors and has_intensity:
+                point_format, version = 3, "1.2"
+            elif has_colors:
+                point_format, version = 2, "1.2"
+            elif has_intensity:
+                point_format, version = 1, "1.2"
+            else:
+                point_format, version = 0, "1.2"
+
+            header = laspy.LasHeader(point_format=point_format, version=version)
+            header.offsets = np.min(self.xyz, axis=0)
+            header.scales = [0.001, 0.001, 0.001]
+            las = laspy.LasData(header)
+            las.x = self.xyz[:, 0]
+            las.y = self.xyz[:, 1]
+            las.z = self.xyz[:, 2]
+            if self.intensity is not None:
+                las.intensity = self.intensity.astype(np.uint16)
+            if self.colors is not None:
+                colors_16bit = (self.colors.astype(np.uint32) * 257).astype(np.uint16) if self.colors.max() <= 255 else self.colors.astype(np.uint16)
+                las.red = colors_16bit[:, 0]
+                las.green = colors_16bit[:, 1]
+                las.blue = colors_16bit[:, 2]
+            if self.normals is not None:
+                for name in ("NormalX", "NormalY", "NormalZ"):
+                    las.add_extra_dim(laspy.ExtraBytesParams(name=name, type=np.float32))
+                las.NormalX = self.normals[:, 0].astype(np.float32)
+                las.NormalY = self.normals[:, 1].astype(np.float32)
+                las.NormalZ = self.normals[:, 2].astype(np.float32)
+            las.write(str(las_output_path))
+
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(self.xyz)
+            if self.colors is not None:
+                colors_01 = self.colors.astype(np.float64)
+                if colors_01.max() > 1.0:
+                    colors_01 = colors_01 / 255.0
+                pcd.colors = o3d.utility.Vector3dVector(np.clip(colors_01, 0.0, 1.0))
+            if self.normals is not None:
+                pcd.normals = o3d.utility.Vector3dVector(self.normals)
+            o3d.io.write_point_cloud(str(pcd_output_path), pcd, write_ascii=False)
+            self.finished.emit(str(self.scan_dir), str(las_output_path), str(pcd_output_path))
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class FilterCommand(QUndoCommand):
@@ -59,6 +260,8 @@ class PointCloudFilterViewer(QWidget):
 
         # Suppress crop spinbox feedback loops
         self._updating_crop_ui = False
+        self._worker = None
+        self._busy = False
         
         # Undo stack
         self.undo_stack = QUndoStack(self)
@@ -91,8 +294,8 @@ class PointCloudFilterViewer(QWidget):
         
         controls_layout = QHBoxLayout()
         
-        btn_load = QPushButton("Load LAS File")
-        btn_load.clicked.connect(self.load_las_file)
+        btn_load = QPushButton("Load Point Cloud")
+        btn_load.clicked.connect(self.load_point_cloud)
         controls_layout.addWidget(btn_load)
         
         btn_reset = QPushButton("Reset to Original")
@@ -107,7 +310,7 @@ class PointCloudFilterViewer(QWidget):
         btn_redo.clicked.connect(self.undo_stack.redo)
         controls_layout.addWidget(btn_redo)
         
-        btn_save = QPushButton("Save LAS and Return")
+        btn_save = QPushButton("Save Filtered Cloud and Return")
         btn_save.clicked.connect(self.save_las_file)
         controls_layout.addWidget(btn_save)
 
@@ -405,56 +608,41 @@ class PointCloudFilterViewer(QWidget):
     # File operations
     # ------------------------------------------------------------------
     
-    def load_las_file(self):
+    def load_point_cloud(self):
         if self.filename is None:
             return
-        filename = self.filename
+        if self._busy:
+            return
+        self._set_busy(True, "Loading point cloud...")
+        self._worker = LoadWorker(self.filename)
+        self._worker.finished.connect(self._on_load_worker_finished)
+        self._worker.failed.connect(self._on_filter_worker_failed)
+        self._worker.start()
 
-        try:
-            las = laspy.read(filename)
-            
-            self.original_xyz = np.vstack((las.x, las.y, las.z)).T
-            
-            if hasattr(las, 'red') and hasattr(las, 'green') and hasattr(las, 'blue'):
-                colors = np.vstack((las.red, las.green, las.blue)).T
-                if colors.max() > 255:
-                    colors = (colors / 65535 * 255).astype(np.uint8)
-                self.original_colors = colors
-            else:
-                self.original_colors = None
-            
-            if hasattr(las, 'intensity'):
-                self.original_intensity = np.array(las.intensity)
-            else:
-                self.original_intensity = None
-                
-            if hasattr(las, 'NormalX') and hasattr(las, 'NormalY') and hasattr(las, 'NormalZ'):
-                self.original_normals = np.vstack((las.NormalX, las.NormalY, las.NormalZ)).T
-            else:
-                self.original_normals = None
-                
-            self.current_xyz = self.original_xyz.copy()
-            self.current_colors = self.original_colors.copy() if self.original_colors is not None else None
-            self.current_intensity = self.original_intensity.copy() if self.original_intensity is not None else None
-            self.current_normals = self.original_normals.copy() if self.original_normals is not None else None
-            
-            self.undo_stack.clear()
+    def _on_load_worker_finished(self, xyz, colors, intensity, normals, filename: str):
+        self.original_xyz = np.asarray(xyz, dtype=np.float64)
+        self.original_colors = None if colors is None else np.asarray(colors)
+        self.original_intensity = None if intensity is None else np.asarray(intensity)
+        self.original_normals = None if normals is None else np.asarray(normals, dtype=np.float64)
+        self.current_xyz = self.original_xyz.copy()
+        self.current_colors = self.original_colors.copy() if self.original_colors is not None else None
+        self.current_intensity = self.original_intensity.copy() if self.original_intensity is not None else None
+        self.current_normals = self.original_normals.copy() if self.original_normals is not None else None
+        self.undo_stack.clear()
+        self._set_busy(False)
+        self._reset_crop_to_data_bounds()
+        self._visualize_current()
+        info_parts = [f"Loaded {len(self.original_xyz):,} points"]
+        if self.original_colors is not None:
+            info_parts.append("with RGB colors")
+        if self.original_intensity is not None:
+            info_parts.append("with intensity")
+        if self.original_normals is not None:
+            info_parts.append("with normals")
+        QMessageBox.information(self, "Success", ", ".join(info_parts))
 
-            self._reset_crop_to_data_bounds()
-            self._visualize_current()
-            
-            info_parts = [f"Loaded {len(self.original_xyz):,} points"]
-            if self.original_colors is not None:
-                info_parts.append("with RGB colors")
-            if self.original_intensity is not None:
-                info_parts.append("with intensity")
-            if self.original_normals is not None:
-                info_parts.append("with normals")
-            
-            QMessageBox.information(self, "Success", ", ".join(info_parts))
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load LAS file:\n{str(e)}")
+    def load_las_file(self):
+        self.load_point_cloud()
             
     def reset_to_original(self):
         if self.original_xyz is None:
@@ -470,11 +658,8 @@ class PointCloudFilterViewer(QWidget):
         self._visualize_current()
         
     def save_las_file(self):
-        import os
-        import json
-        import numpy as np
-        import laspy
         from PySide6.QtWidgets import QMessageBox
+        from scan_metadata import load_scan_metadata, save_scan_metadata, update_file_entry, update_status
 
         if self.current_xyz is None:
             QMessageBox.warning(self, "Warning", "No point cloud to save")
@@ -483,138 +668,29 @@ class PointCloudFilterViewer(QWidget):
         if not self.filename:
             QMessageBox.warning(self, "Warning", "No source file path provided")
             return
+        if self._busy:
+            return
+        scan_dir = Path(self.filename).resolve().parent.parent
+        self._set_busy(True, "Saving filtered cloud...")
+        self._save_scan_dir = scan_dir
+        self._worker = SaveWorker(scan_dir, self.current_xyz, self.current_colors, self.current_intensity, self.current_normals)
+        self._worker.finished.connect(self._on_save_worker_finished)
+        self._worker.failed.connect(self._on_filter_worker_failed)
+        self._worker.start()
 
-        try:
-            print("Original source file:", self.filename)
+    def _on_save_worker_finished(self, scan_dir: str, las_path: str, pcd_path: str):
+        from scan_metadata import load_scan_metadata, save_scan_metadata, update_file_entry, update_status
 
-            # -----------------------------------
-            # Build filtered output path
-            # Example input:
-            # assets/scan_001/processed/slam/cloud.las
-            #
-            # Output:
-            # assets/scan_001/processed/filtered/cloud_filtered.las
-            # -----------------------------------
-            source_path = os.path.normpath(self.filename)
-
-            # go up from .../processed/slam/cloud.las -> .../processed
-            slam_dir = os.path.dirname(source_path)                # .../processed/slam
-            processed_dir = os.path.dirname(slam_dir)             # .../processed
-            scan_dir = os.path.dirname(processed_dir)             # .../scan_001
-
-            filtered_dir = os.path.join(processed_dir, "filtered")
-            os.makedirs(filtered_dir, exist_ok=True)
-
-            output_path = os.path.join(filtered_dir, "cloud_filtered.las")
-
-            print("Saving filtered point cloud to:", output_path)
-
-            # -----------------------------------
-            # Determine LAS format
-            # -----------------------------------
-            has_colors = self.current_colors is not None
-            has_intensity = self.current_intensity is not None
-
-            if has_colors and has_intensity:
-                point_format, version = 3, "1.2"
-            elif has_colors:
-                point_format, version = 2, "1.2"
-            elif has_intensity:
-                point_format, version = 1, "1.2"
-            else:
-                point_format, version = 0, "1.2"
-
-            header = laspy.LasHeader(point_format=point_format, version=version)
-            header.offsets = np.min(self.current_xyz, axis=0)
-            header.scales = [0.001, 0.001, 0.001]
-
-            las = laspy.LasData(header)
-            las.x = self.current_xyz[:, 0]
-            las.y = self.current_xyz[:, 1]
-            las.z = self.current_xyz[:, 2]
-
-            if self.current_intensity is not None:
-                las.intensity = self.current_intensity.astype(np.uint16)
-
-            if self.current_colors is not None:
-                if self.current_colors.max() <= 255:
-                    colors_16bit = (self.current_colors.astype(np.uint32) * 257).astype(np.uint16)
-                else:
-                    colors_16bit = self.current_colors.astype(np.uint16)
-
-                las.red = colors_16bit[:, 0]
-                las.green = colors_16bit[:, 1]
-                las.blue = colors_16bit[:, 2]
-
-            # Optional normals
-            if self.current_normals is not None:
-                try:
-                    for name in ("NormalX", "NormalY", "NormalZ"):
-                        las.add_extra_dim(laspy.ExtraBytesParams(name=name, type=np.float32))
-                    las.NormalX = self.current_normals[:, 0].astype(np.float32)
-                    las.NormalY = self.current_normals[:, 1].astype(np.float32)
-                    las.NormalZ = self.current_normals[:, 2].astype(np.float32)
-                except Exception as e:
-                    print(f"Warning: Could not save normals: {e}")
-
-            # -----------------------------------
-            # Write LAS file
-            # -----------------------------------
-            las.write(output_path)
-
-            # -----------------------------------
-            # Update metadata.json
-            # -----------------------------------
-            metadata_path = os.path.join(scan_dir, "metadata.json")
-
-            if os.path.exists(metadata_path):
-                with open(metadata_path, "r") as f:
-                    metadata = json.load(f)
-            else:
-                metadata = {}
-
-            # Ensure required structure exists
-            if "files" not in metadata or not isinstance(metadata["files"], dict):
-                metadata["files"] = {}
-
-            if "status" not in metadata or not isinstance(metadata["status"], dict):
-                metadata["status"] = {}
-
-            # Save relative path if you want cleaner metadata
-            rel_output_path = os.path.relpath(output_path, scan_dir).replace("\\", "/")
-
-            metadata["files"]["filtered"] = rel_output_path
-            metadata["status"]["filtering"] = "done"
-
-            with open(metadata_path, "w") as f:
-                json.dump(metadata, f, indent=2)
-
-            print("Updated metadata.json:", metadata_path)
-
-            # -----------------------------------
-            # Show success
-            # -----------------------------------
-            info_parts = [f"Saved {len(self.current_xyz):,} points"]
-            if self.current_colors is not None:
-                info_parts.append("with RGB colors")
-            if self.current_intensity is not None:
-                info_parts.append("with intensity")
-            if self.current_normals is not None:
-                info_parts.append("with normals")
-
-            QMessageBox.information(
-                self,
-                "Success",
-                f"{', '.join(info_parts)} to:\n{output_path}"
-            )
-
-            # -----------------------------------
-            # Return to dashboard
-            # -----------------------------------
-            self.backRequested.emit()
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save LAS file:\n{str(e)}")
+        scan_dir = Path(scan_dir)
+        scan_dir, metadata = load_scan_metadata(scan_dir)
+        update_file_entry(metadata, scan_dir, "filtered_las", las_path)
+        update_file_entry(metadata, scan_dir, "filtered_pcd", pcd_path)
+        update_status(metadata, "filtering", "done")
+        metadata.setdefault("files", {}).pop("filtered", None)
+        save_scan_metadata(scan_dir, metadata)
+        self._set_busy(False)
+        # Return immediately instead of blocking on a modal success dialog.
+        self.backRequested.emit()
         
     # ------------------------------------------------------------------
     # Filter apply methods  (each pushes an undo command)
@@ -636,80 +712,90 @@ class PointCloudFilterViewer(QWidget):
         cmd = FilterCommand(self, old_data, new_data, name)
         self.undo_stack.push(cmd)
 
-    def apply_downsampling(self):
+    def _set_busy(self, busy: bool, message: str | None = None):
+        self._busy = busy
+        for button in self.findChildren(QPushButton):
+            if button.text() == "Cancel":
+                button.setEnabled(True)
+            else:
+                button.setEnabled(not busy)
+        self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
+        if message:
+            self.lbl_point_count.setText(message)
+
+    def _run_async_filter(self, op_name: str, **params):
         if self.current_xyz is None:
             return
-        voxel_size = self.spin_voxel.value()
-        result = self._voxel_downsample(
-            self.current_xyz, self.current_colors,
-            self.current_intensity, self.current_normals, voxel_size
+        if self._busy:
+            return
+        self._set_busy(True, f"Running {op_name}...")
+        self._worker = FilterWorker(
+            op_name,
+            self.current_xyz,
+            self.current_colors,
+            self.current_intensity,
+            self.current_normals,
+            **params,
         )
-        self._push_filter(*result, f"Downsample (voxel={voxel_size}m)")
+        self._worker.finished.connect(self._on_filter_worker_finished)
+        self._worker.failed.connect(self._on_filter_worker_failed)
+        self._worker.start()
+
+    def _on_filter_worker_finished(self, xyz, colors, intensity, normals, op_name: str):
+        self._set_busy(False)
+        if op_name == "crop":
+            self._remove_crop_box()
+        labels = {
+            "downsample": "Downsample",
+            "sor": "SOR",
+            "ror": "ROR",
+            "sla": "SLA",
+            "crop": "Crop",
+        }
+        self._push_filter(xyz, colors, intensity, normals, labels.get(op_name, op_name))
+
+    def _on_filter_worker_failed(self, message: str):
+        self._set_busy(False)
+        QMessageBox.critical(self, "Filter Error", message)
+
+    def apply_downsampling(self):
+        self._run_async_filter("downsample", voxel_size=self.spin_voxel.value())
 
     def apply_sor(self):
         """Statistical Outlier Removal"""
-        if self.current_xyz is None:
-            return
-        n = self.spin_sor_neighbors.value()
-        std = self.spin_sor_std.value()
-        result = self._statistical_outlier_removal(
-            self.current_xyz, self.current_colors,
-            self.current_intensity, self.current_normals, n, std
+        self._run_async_filter(
+            "sor",
+            n_neighbors=self.spin_sor_neighbors.value(),
+            std_multiplier=self.spin_sor_std.value(),
         )
-        self._push_filter(*result, f"SOR (k={n}, std={std})")
 
     def apply_ror(self):
         """Radius Outlier Removal"""
-        if self.current_xyz is None:
-            return
-        radius = self.spin_ror_radius.value()
-        min_nb = self.spin_ror_min_neighbors.value()
-        result = self._radius_outlier_removal(
-            self.current_xyz, self.current_colors,
-            self.current_intensity, self.current_normals, radius, min_nb
+        self._run_async_filter(
+            "ror",
+            radius=self.spin_ror_radius.value(),
+            min_neighbors=self.spin_ror_min_neighbors.value(),
         )
-        self._push_filter(*result, f"ROR (r={radius}m, min_nb={min_nb})")
 
     def apply_sla(self):
         """Simple Local Averaging"""
-        if self.current_xyz is None:
-            return
-        k = self.spin_sla_k.value()
-        strength = self.spin_sla_strength.value()
-        result = self._simple_local_averaging(
-            self.current_xyz, self.current_colors,
-            self.current_intensity, self.current_normals, k, strength
+        self._run_async_filter(
+            "sla",
+            k=self.spin_sla_k.value(),
+            strength=self.spin_sla_strength.value(),
         )
-        self._push_filter(*result, f"SLA (k={k}, strength={strength:.2f})")
 
     def apply_crop(self):
         """Crop to bounding box"""
-        if self.current_xyz is None:
-            return
-        xmin = self.spin_crop_xmin.value()
-        xmax = self.spin_crop_xmax.value()
-        ymin = self.spin_crop_ymin.value()
-        ymax = self.spin_crop_ymax.value()
-        zmin = self.spin_crop_zmin.value()
-        zmax = self.spin_crop_zmax.value()
-
-        mask = (
-            (self.current_xyz[:, 0] >= xmin) & (self.current_xyz[:, 0] <= xmax) &
-            (self.current_xyz[:, 1] >= ymin) & (self.current_xyz[:, 1] <= ymax) &
-            (self.current_xyz[:, 2] >= zmin) & (self.current_xyz[:, 2] <= zmax)
+        bounds = (
+            self.spin_crop_xmin.value(),
+            self.spin_crop_xmax.value(),
+            self.spin_crop_ymin.value(),
+            self.spin_crop_ymax.value(),
+            self.spin_crop_zmin.value(),
+            self.spin_crop_zmax.value(),
         )
-
-        new_xyz   = self.current_xyz[mask]
-        new_col   = self.current_colors[mask]    if self.current_colors    is not None else None
-        new_int   = self.current_intensity[mask] if self.current_intensity is not None else None
-        new_norm  = self.current_normals[mask]   if self.current_normals   is not None else None
-
-        self._push_filter(
-            new_xyz, new_col, new_int, new_norm,
-            f"Crop X[{xmin:.2f},{xmax:.2f}] Y[{ymin:.2f},{ymax:.2f}] Z[{zmin:.2f},{zmax:.2f}]"
-        )
-        # Hide preview box after apply
-        self._remove_crop_box()
+        self._run_async_filter("crop", bounds=bounds)
 
     # ------------------------------------------------------------------
     # Core filtering algorithms

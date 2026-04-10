@@ -21,6 +21,7 @@ class CalibrationModeView(QWidget):
     """Standalone mode for direct visual LiDAR calibration workflow."""
 
     runCalibrationRequested = Signal(str, str, str)  # dataset_path, run_name, stop_after
+    checkRequirementsRequested = Signal()
     switchToPostProcessingRequested = Signal()
 
     def __init__(self, default_output_root: Path, parent=None):
@@ -66,6 +67,21 @@ class CalibrationModeView(QWidget):
         summary.setStyleSheet("color: #374151;")
         layout.addWidget(summary)
 
+        requirements = QFrame()
+        requirements.setStyleSheet("QFrame { background-color: #fff7ed; border: 1px solid #fdba74; border-radius: 8px; }")
+        requirements_layout = QVBoxLayout()
+        requirements_layout.setContentsMargins(12, 10, 12, 10)
+        requirements.setLayout(requirements_layout)
+        requirements_label = QLabel(
+            "<b>Calibration Requirements</b><br>"
+            "Calibration requires a real GPU-backed OpenGL path through WSLg inside the Docker runtime.<br>"
+            "Software rendering is not a supported calibration path on Windows.<br>"
+            "Use <b>Check Requirements</b> before running calibration on a new machine."
+        )
+        requirements_label.setWordWrap(True)
+        requirements_layout.addWidget(requirements_label)
+        layout.addWidget(requirements)
+
         notes = QFrame()
         notes.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #d8dee9; border-radius: 8px; }")
         notes_layout = QVBoxLayout()
@@ -104,6 +120,11 @@ class CalibrationModeView(QWidget):
         layout.addLayout(run_row)
 
         buttons_row = QHBoxLayout()
+        check_btn = QPushButton("Check Requirements")
+        check_btn.setStyleSheet("QPushButton { background-color: #0F766E; color: white; }")
+        check_btn.clicked.connect(self.checkRequirementsRequested.emit)
+        buttons_row.addWidget(check_btn)
+
         run_full_btn = QPushButton("Run Calibration")
         run_full_btn.setStyleSheet("QPushButton { background-color: #673AB7; color: white; }")
         run_full_btn.clicked.connect(lambda: self._emit_run(""))
@@ -127,6 +148,11 @@ class CalibrationModeView(QWidget):
         output_note.setWordWrap(True)
         output_note.setStyleSheet("color: #4b5563;")
         layout.addWidget(output_note)
+
+        self.requirements_status_label = QLabel("Requirements check not run yet.")
+        self.requirements_status_label.setWordWrap(True)
+        self.requirements_status_label.setStyleSheet("color: #374151; background-color: #eef2ff; border: 1px solid #c7d2fe; border-radius: 6px; padding: 8px;")
+        layout.addWidget(self.requirements_status_label)
 
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("color: #374151; padding-top: 6px;")
@@ -163,3 +189,22 @@ class CalibrationModeView(QWidget):
 
     def set_status(self, message: str):
         self.status_label.setText(message)
+
+    def set_requirements_status(self, message: str, *, ok: bool | None = None):
+        self.requirements_status_label.setText(message)
+        if ok is True:
+            style = (
+                "color: #14532d; background-color: #ecfdf5; border: 1px solid #86efac; "
+                "border-radius: 6px; padding: 8px;"
+            )
+        elif ok is False:
+            style = (
+                "color: #991b1b; background-color: #fef2f2; border: 1px solid #fca5a5; "
+                "border-radius: 6px; padding: 8px;"
+            )
+        else:
+            style = (
+                "color: #374151; background-color: #eef2ff; border: 1px solid #c7d2fe; "
+                "border-radius: 6px; padding: 8px;"
+            )
+        self.requirements_status_label.setStyleSheet(style)
