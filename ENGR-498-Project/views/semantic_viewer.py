@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt, Signal
 from pyvistaqt import QtInteractor
 
 from project_paths import DEFAULT_LAS_PATH
+from theme import THEME, button_style
 
 LAS_PATH = DEFAULT_LAS_PATH
 
@@ -46,7 +47,10 @@ class SemanticViewer(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("semanticViewer")
         layout = QHBoxLayout()
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(16)
         self.setLayout(layout)
 
         # Left side: 3D viewer
@@ -55,15 +59,25 @@ class SemanticViewer(QWidget):
         layout.addWidget(self.plotter, stretch=3)
 
         # Right side: controls
+        side_panel_host = QWidget()
+        side_panel_host.setProperty("card", True)
+        side_panel_host.setStyleSheet(
+            f"QWidget {{ background-color: {THEME['pane']}; border: 1px solid {THEME['border']}; border-radius: {THEME['radius_md']}; }}"
+        )
         side_panel = QVBoxLayout()
-        layout.addLayout(side_panel, stretch=1)
+        side_panel.setContentsMargins(12, 12, 12, 12)
+        side_panel.setSpacing(10)
+        side_panel_host.setLayout(side_panel)
+        layout.addWidget(side_panel_host, stretch=1)
 
         title = QLabel("Semantic Classes")
         title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {THEME['text']};")
         side_panel.addWidget(title)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QScrollArea.NoFrame)
         scroll_content = QWidget()
         self.scroll_layout = QVBoxLayout()
         scroll_content.setLayout(self.scroll_layout)
@@ -71,6 +85,7 @@ class SemanticViewer(QWidget):
         side_panel.addWidget(self.scroll)
 
         self.back_button = QPushButton("Back")
+        self.back_button.setStyleSheet(button_style(THEME["accent"], THEME["accent_hover"]))
         self.back_button.clicked.connect(self.backRequested.emit)
         side_panel.addWidget(self.back_button)
 
@@ -116,7 +131,7 @@ class SemanticViewer(QWidget):
             swatch = QLabel()
             swatch.setFixedSize(16, 16)
             swatch.setStyleSheet(
-                f"background-color: rgb({color[0]}, {color[1]}, {color[2]}); border: 1px solid #444;"
+                f"background-color: rgb({color[0]}, {color[1]}, {color[2]}); border: 1px solid {THEME['border_strong']}; border-radius: 4px;"
             )
             row.addWidget(swatch)
 

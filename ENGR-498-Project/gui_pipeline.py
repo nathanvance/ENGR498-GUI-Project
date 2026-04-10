@@ -29,6 +29,7 @@ from timing_settings import (
     resolve_effective_timing,
     resolve_global_fusion_settings,
     resolve_global_gps_settings,
+    resolve_global_pose_recovery_settings,
 )
 
 
@@ -282,6 +283,7 @@ class BackendPipelineThread(QThread):
     def _run_pose_recovery(self, scan_dir: Path, metadata: dict) -> Path:
         effective_timing = resolve_effective_timing(metadata)
         pose_cfg = metadata.get("config", {}).get("pose_recovery", {})
+        global_pose_recovery_cfg = resolve_global_pose_recovery_settings()
         allow_missing_gps, gps_mode_source = self._gps_optional_enabled(metadata)
         files = metadata["files"]
         bag_path = resolve_scan_path(scan_dir, files.get("rosbag"))
@@ -304,6 +306,11 @@ class BackendPipelineThread(QThread):
         ]
         if pose_cfg.get("enable_rviz"):
             command.append("--rviz")
+        if not global_pose_recovery_cfg.get("blur_filter_enabled", True):
+            command.append("--disable-blur-filter")
+            self.emit_log("[pose-recovery] blur filtering disabled by global settings.")
+        else:
+            self.emit_log("[pose-recovery] blur filtering enabled by global settings.")
         if allow_missing_gps:
             command.append("--gps-optional")
             self.emit_log(

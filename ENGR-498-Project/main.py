@@ -23,10 +23,13 @@ if sys.platform.startswith("win") and not _has_nvidia_gpu():
 from PySide6.QtWidgets import QApplication
 
 from testDashboard import DashboardTestWindow
+from theme import build_palette, build_stylesheet
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setPalette(build_palette())
+    app.setStyleSheet(build_stylesheet())
     window = DashboardTestWindow()
     window.show()
     sys.exit(app.exec())

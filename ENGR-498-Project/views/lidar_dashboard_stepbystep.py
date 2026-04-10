@@ -24,6 +24,29 @@ from scan_metadata import (
     save_scan_metadata,
 )
 from timing_settings import load_global_timing_settings, save_global_timing_settings, resolve_effective_timing
+from theme import THEME, button_style, notification_item_style, notification_panel_style, subtle_button_style
+
+
+def compact_step_button_style(background: str, hover: str, *, text: str = "#ffffff") -> str:
+    return f"""
+        QPushButton {{
+            background-color: {background};
+            color: {text};
+            border: 1px solid transparent;
+            padding: 6px 8px;
+            border-radius: {THEME['radius_sm']};
+            font-weight: 700;
+            font-size: 11px;
+        }}
+        QPushButton:hover:enabled {{
+            background-color: {hover};
+        }}
+        QPushButton:disabled {{
+            background-color: #475569;
+            color: {THEME['muted']};
+            border-color: {THEME['border']};
+        }}
+    """
 
 
 class WireParametersDialog(QDialog):
@@ -45,7 +68,7 @@ class WireParametersDialog(QDialog):
         
         # Title
         title = QLabel("Configure Wire Extraction Parameters")
-        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #1976D2; margin-bottom: 10px;")
+        title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {THEME['text']}; margin-bottom: 10px;")
         layout.addWidget(title)
         
         # Form layout
@@ -72,7 +95,7 @@ class WireParametersDialog(QDialog):
             "• Should be <b>smaller than minimum distance between adjacent power lines</b>"
         )
         r_desc.setWordWrap(True)
-        r_desc.setStyleSheet("color: #666; font-size: 11px; background-color: #f5f5f5; padding: 8px; border-radius: 4px;")
+        r_desc.setStyleSheet(f"color: {THEME['muted']}; font-size: 11px; background-color: {THEME['pane_raised']}; padding: 8px; border-radius: 4px;")
         r_layout.addWidget(r_desc)
         
         form.addRow("Search Radius (R):", r_widget)
@@ -97,7 +120,7 @@ class WireParametersDialog(QDialog):
             "• <b>Larger value:</b> More permissive"
         )
         angle_desc.setWordWrap(True)
-        angle_desc.setStyleSheet("color: #666; font-size: 11px; background-color: #f5f5f5; padding: 8px; border-radius: 4px;")
+        angle_desc.setStyleSheet(f"color: {THEME['muted']}; font-size: 11px; background-color: {THEME['pane_raised']}; padding: 8px; border-radius: 4px;")
         angle_layout.addWidget(angle_desc)
         
         form.addRow("Angle Threshold:", angle_widget)
@@ -123,7 +146,7 @@ class WireParametersDialog(QDialog):
             "• <b>Lower values:</b> Accept more curved features"
         )
         linearity_desc.setWordWrap(True)
-        linearity_desc.setStyleSheet("color: #666; font-size: 11px; background-color: #f5f5f5; padding: 8px; border-radius: 4px;")
+        linearity_desc.setStyleSheet(f"color: {THEME['muted']}; font-size: 11px; background-color: {THEME['pane_raised']}; padding: 8px; border-radius: 4px;")
         linearity_layout.addWidget(linearity_desc)
         
         form.addRow("Linearity Threshold:", linearity_widget)
@@ -148,7 +171,7 @@ class WireParametersDialog(QDialog):
             "<b>Fusion span catenary sag</b> matches the wire to Fusion pole-pair spans and only works after the Fusion step completes."
         )
         sag_method_desc.setWordWrap(True)
-        sag_method_desc.setStyleSheet("color: #666; font-size: 11px; background-color: #f5f5f5; padding: 8px; border-radius: 4px;")
+        sag_method_desc.setStyleSheet(f"color: {THEME['muted']}; font-size: 11px; background-color: {THEME['pane_raised']}; padding: 8px; border-radius: 4px;")
         sag_method_layout.addWidget(sag_method_desc)
 
         form.addRow("Sag Method:", sag_method_widget)
@@ -183,16 +206,13 @@ class StepInfoDialog(QDialog):
         self.setLayout(layout)
 
         title_label = QLabel(title)
-        title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #1f3a5f; margin-bottom: 8px;")
+        title_label.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {THEME['text']}; margin-bottom: 8px;")
         layout.addWidget(title_label)
 
         body = QTextEdit()
         body.setReadOnly(True)
         body.setMarkdown(body_markdown)
-        body.setStyleSheet(
-            "QTextEdit { background-color: #ffffff; color: #1f2937; border: 1px solid #d0d7de; "
-            "border-radius: 6px; padding: 8px; }"
-        )
+        body.setProperty("log", True)
         layout.addWidget(body, stretch=1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
@@ -227,7 +247,7 @@ class InferenceParametersDialog(QDialog):
         self.setLayout(layout)
 
         title = QLabel("Configure Image Inference Runtime")
-        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #1f3a5f; margin-bottom: 10px;")
+        title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {THEME['text']}; margin-bottom: 10px;")
         layout.addWidget(title)
 
         help_text = QLabel(
@@ -237,7 +257,7 @@ class InferenceParametersDialog(QDialog):
             "selector is kept internal so the user does not need to manage GPU ordinals."
         )
         help_text.setWordWrap(True)
-        help_text.setStyleSheet("color: #4b5563; background-color: #eef4ff; padding: 8px; border-radius: 4px;")
+        help_text.setStyleSheet(f"color: {THEME['muted']}; background-color: {THEME['pane_raised']}; padding: 8px; border-radius: 4px;")
         layout.addWidget(help_text)
 
         form = QFormLayout()
@@ -316,7 +336,7 @@ class FusionParametersDialog(QDialog):
         self.setLayout(layout)
 
         title = QLabel("Link Calibration Output and GPS Mapping")
-        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #1f3a5f; margin-bottom: 10px;")
+        title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {THEME['text']}; margin-bottom: 10px;")
         layout.addWidget(title)
 
         help_text = QLabel(
@@ -325,7 +345,7 @@ class FusionParametersDialog(QDialog):
             "and the developer-mode GPS override for bags that do not contain NavSatFix data."
         )
         help_text.setWordWrap(True)
-        help_text.setStyleSheet("color: #4b5563; background-color: #eef8ef; padding: 8px; border-radius: 4px;")
+        help_text.setStyleSheet(f"color: {THEME['muted']}; background-color: {THEME['pane_raised']}; padding: 8px; border-radius: 4px;")
         layout.addWidget(help_text)
 
         form = QFormLayout()
@@ -349,7 +369,7 @@ class FusionParametersDialog(QDialog):
         layout.addWidget(self.allow_missing_gps_cb)
 
         timing_title = QLabel("Timing Calibration Overrides (per scan)")
-        timing_title.setStyleSheet("font-weight: bold; color: #1f3a5f; margin-top: 6px;")
+        timing_title.setStyleSheet(f"font-weight: bold; color: {THEME['text']}; margin-top: 6px;")
         layout.addWidget(timing_title)
 
         self.override_fusion_cb = QCheckBox("Override Fusion time offset")
@@ -372,7 +392,7 @@ class FusionParametersDialog(QDialog):
             "GPS georeferencing remains strict by default; enable developer mode above only for bags that truly have no GPS."
         )
         effective_label.setWordWrap(True)
-        effective_label.setStyleSheet("color: #4b5563; background-color: #eef4ff; padding: 8px; border-radius: 4px;")
+        effective_label.setStyleSheet(f"color: {THEME['muted']}; background-color: {THEME['pane_raised']}; padding: 8px; border-radius: 4px;")
         layout.addWidget(effective_label)
 
         layout.addLayout(form)
@@ -411,23 +431,25 @@ class GlobalTimingSettingsDialog(QDialog):
         layout = QVBoxLayout()
         self.setLayout(layout)
 
-        title = QLabel("Global Timing, GPS, And Fusion Defaults")
-        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #1f3a5f; margin-bottom: 10px;")
+        title = QLabel("Global Timing, GPS, Fusion, And Pose-Recovery Defaults")
+        title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {THEME['text']}; margin-bottom: 10px;")
         layout.addWidget(title)
 
         description = QLabel(
             "These defaults apply to every scan unless that scan sets explicit timing overrides. "
             "Timing values are shown in milliseconds but stored in seconds. "
-            "The GPS developer-mode toggle lets you process bags without NavSatFix data from the GUI."
+            "The GPS developer-mode toggle lets you process bags without NavSatFix data from the GUI, "
+            "and the blur-filter toggle controls whether rosbag preprocessing removes blurry exported camera frames."
         )
         description.setWordWrap(True)
-        description.setStyleSheet("color: #4b5563; background-color: #eef8ef; padding: 8px; border-radius: 4px;")
+        description.setStyleSheet(f"color: {THEME['muted']}; background-color: {THEME['pane_raised']}; padding: 8px; border-radius: 4px;")
         layout.addWidget(description)
 
         form = QFormLayout()
         current_timing = current_settings.get("timing", {})
         current_fusion = current_settings.get("fusion", {})
         current_gps = current_settings.get("gps", {})
+        current_pose_recovery = current_settings.get("pose_recovery", {})
 
         self.fusion_offset_ms = QDoubleSpinBox()
         self.fusion_offset_ms.setRange(-5000.0, 5000.0)
@@ -447,6 +469,12 @@ class GlobalTimingSettingsDialog(QDialog):
         self.global_allow_missing_gps_cb.setChecked(bool(current_gps.get("allow_missing", False)))
         form.addRow("GPS Developer Mode:", self.global_allow_missing_gps_cb)
 
+        self.global_blur_filter_cb = QCheckBox(
+            "Enable blur filtering during rosbag preprocessing"
+        )
+        self.global_blur_filter_cb.setChecked(bool(current_pose_recovery.get("blur_filter_enabled", True)))
+        form.addRow("Pose-Recovery Blur Filter:", self.global_blur_filter_cb)
+
         layout.addLayout(form)
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
@@ -463,6 +491,9 @@ class GlobalTimingSettingsDialog(QDialog):
             },
             "gps": {
                 "allow_missing": bool(self.global_allow_missing_gps_cb.isChecked()),
+            },
+            "pose_recovery": {
+                "blur_filter_enabled": bool(self.global_blur_filter_cb.isChecked()),
             },
         }
 
@@ -483,16 +514,10 @@ class NotificationPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         self.setLayout(layout)
         
-        self.setStyleSheet("""
-            QWidget {
-                background-color: white;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-            }
-        """)
+        self.setStyleSheet(notification_panel_style())
         
         header = QLabel("Notifications")
-        header.setStyleSheet("font-size: 16px; font-weight: bold; border: none;")
+        header.setStyleSheet(f"font-size: 16px; font-weight: bold; border: none; color: {THEME['text']};")
         layout.addWidget(header)
         
         scroll = QScrollArea()
@@ -507,31 +532,13 @@ class NotificationPanel(QWidget):
         
         btn_clear = QPushButton("Clear All")
         btn_clear.clicked.connect(self.clear_notifications)
-        btn_clear.setStyleSheet("""
-            QPushButton {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
-                padding: 6px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #e0e0e0;
-            }
-        """)
+        btn_clear.setStyleSheet(subtle_button_style())
         layout.addWidget(btn_clear)
     
     def add_notification(self, message, status="info"):
         """Add a notification"""
         notif_widget = QFrame()
-        notif_widget.setStyleSheet("""
-            QFrame {
-                background-color: #f9f9f9;
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
-                padding: 8px;
-                margin: 2px;
-            }
-        """)
+        notif_widget.setStyleSheet(notification_item_style())
         
         notif_layout = QHBoxLayout()
         notif_layout.setContentsMargins(4, 4, 4, 4)
@@ -552,7 +559,7 @@ class NotificationPanel(QWidget):
         notif_layout.addWidget(msg_label, stretch=1)
         
         time_label = QLabel(datetime.now().strftime("%H:%M"))
-        time_label.setStyleSheet("color: #999; border: none; background: transparent;")
+        time_label.setStyleSheet(f"color: {THEME['muted']}; border: none; background: transparent;")
         notif_layout.addWidget(time_label)
         
         self.notification_layout.insertWidget(0, notif_widget)
@@ -687,50 +694,52 @@ class StepByStepDashboard(QWidget):
         
         # Status bar
         self.status_label = QLabel("Post-Processing Step-By-Step: Rosbag Preprocessing -> Wires -> Image Inference -> Fusion + GPS, with manual Filtering and FLAI hooks.")
-        self.status_label.setStyleSheet("color: #666; padding: 8px;")
+        self.status_label.setStyleSheet(f"color: {THEME['muted']}; padding: 8px;")
         main_layout.addWidget(self.status_label)
         
         # Apply global styles
-        self.setStyleSheet("""
-            QWidget {
-                background-color: #f6f7fb;
-                color: #1f2937;
+        self.setStyleSheet(
+            f"""
+            QWidget {{
+                background-color: {THEME['bg']};
+                color: {THEME['text']};
                 font-family: 'Segoe UI', Arial, sans-serif;
-            }
-            QLabel {
-                color: #1f2937;
+            }}
+            QLabel {{
+                color: {THEME['text']};
                 background: transparent;
-            }
-            QCheckBox {
-                color: #1f2937;
+            }}
+            QCheckBox {{
+                color: {THEME['text']};
                 spacing: 6px;
                 font-size: 12px;
-            }
-            QTableWidget {
-                background-color: white;
-                color: #1f2937;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-                gridline-color: #e0e0e0;
-                alternate-background-color: #f9fbff;
-            }
-            QTableWidget::item {
+            }}
+            QTableWidget {{
+                background-color: {THEME['input']};
+                color: {THEME['text']};
+                border: 1px solid {THEME['border']};
+                border-radius: {THEME['radius_md']};
+                gridline-color: {THEME['border']};
+                alternate-background-color: {THEME['pane']};
+            }}
+            QTableWidget::item {{
                 padding: 8px;
-                color: #1f2937;
-            }
-            QTableWidget::item:selected {
-                background-color: #dbeafe;
-                color: #111827;
-            }
-            QHeaderView::section {
-                background-color: #f5f5f5;
-                color: #111827;
+                color: {THEME['text']};
+            }}
+            QTableWidget::item:selected {{
+                background-color: {THEME['selection']};
+                color: #ffffff;
+            }}
+            QHeaderView::section {{
+                background-color: {THEME['pane_raised']};
+                color: {THEME['text']};
                 padding: 10px;
                 border: none;
-                border-bottom: 2px solid #673AB7;
+                border-bottom: 1px solid {THEME['border_strong']};
                 font-weight: bold;
-            }
-        """)
+            }}
+        """
+        )
     
     def _create_top_bar(self):
         """Create top bar"""
@@ -744,7 +753,7 @@ class StepByStepDashboard(QWidget):
         title_font.setPointSize(20)
         title_font.setBold(True)
         title.setFont(title_font)
-        title.setStyleSheet("color: #673AB7;")
+        title.setStyleSheet(f"color: {THEME['text']};")
         layout.addWidget(title)
         
         # Mode badge
@@ -787,56 +796,21 @@ class StepByStepDashboard(QWidget):
     def _create_controls_bar(self):
         """Create controls bar"""
         bar = QFrame()
-        bar.setStyleSheet("""
-            QFrame {
-                background-color: white;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-                padding: 12px;
-            }
-        """)
+        bar.setStyleSheet(
+            f"QFrame {{ background-color: {THEME['pane']}; border: 1px solid {THEME['border']}; border-radius: {THEME['radius_md']}; padding: 12px; }}"
+        )
         layout = QHBoxLayout()
         bar.setLayout(layout)
         
         # Create New Scan button
         btn_new_scan = QPushButton("➕ Upload New Scan")
-        btn_new_scan.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
+        btn_new_scan.setStyleSheet(button_style(THEME["success"], "#4ade80"))
         btn_new_scan.clicked.connect(self.createScanRequested.emit)
         layout.addWidget(btn_new_scan)
 
         self.btn_run_pipeline = QPushButton("Run Full Pipeline")
         self.btn_run_pipeline.setEnabled(False)
-        self.btn_run_pipeline.setStyleSheet("""
-            QPushButton {
-                background-color: #673AB7;
-                color: white;
-                border: none;
-                padding: 10px 18px;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #5E35B1;
-            }
-            QPushButton:disabled {
-                background-color: #D1C4E9;
-                color: white;
-            }
-        """)
+        self.btn_run_pipeline.setStyleSheet(button_style("#7c3aed", "#8b5cf6"))
         self.btn_run_pipeline.setToolTip("Run the automated backend chain for the selected scan: Rosbag Preprocessing -> Wires -> Image Inference -> Fusion + GPS.")
         self.btn_run_pipeline.clicked.connect(self._run_full_pipeline)
         layout.addWidget(self.btn_run_pipeline)
@@ -845,20 +819,7 @@ class StepByStepDashboard(QWidget):
         btn_timing.setToolTip(
             "Set global timing defaults, the GPS developer-mode override, and the Fusion visualization default."
         )
-        btn_timing.setStyleSheet("""
-            QPushButton {
-                background-color: #0F766E;
-                color: white;
-                border: none;
-                padding: 10px 18px;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #115E59;
-            }
-        """)
+        btn_timing.setStyleSheet(button_style("#0f766e", "#14b8a6"))
         btn_timing.clicked.connect(self._open_global_timing_dialog)
         layout.addWidget(btn_timing)
 
@@ -867,38 +828,14 @@ class StepByStepDashboard(QWidget):
         # Switch to Auto Mode button
         btn_auto_mode = QPushButton("⚡ Auto Mode")
         btn_auto_mode.setToolTip("Switch to automatic pipeline processing")
-        btn_auto_mode.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
+        btn_auto_mode.setStyleSheet(button_style("#7c3aed", "#8b5cf6"))
         btn_auto_mode.clicked.connect(self.switchToAutoModeRequested.emit)
         layout.addWidget(btn_auto_mode)
         
         # Refresh button
         btn_refresh = QPushButton("🔄")
         btn_refresh.setToolTip("Refresh scans")
-        btn_refresh.setStyleSheet("""
-            QPushButton {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
-                padding: 8px 12px;
-                border-radius: 4px;
-                font-size: 16px;
-            }
-            QPushButton:hover {
-                background-color: #e0e0e0;
-            }
-        """)
+        btn_refresh.setStyleSheet(subtle_button_style())
         btn_refresh.clicked.connect(lambda: self.refresh_scans(force=True))
         layout.addWidget(btn_refresh)
         
@@ -918,17 +855,14 @@ class StepByStepDashboard(QWidget):
         log_output.setReadOnly(True)
         log_output.setMinimumHeight(170)
         log_output.setPlaceholderText("Backend console output will appear here while Rosbag Preprocessing, Wires, Image Inference, and Fusion + GPS run.")
-        log_output.setStyleSheet(
-            "QTextEdit { background-color: #0f172a; color: #e5e7eb; border: 1px solid #1f2937; "
-            "border-radius: 8px; padding: 8px; font-family: Consolas, 'Courier New', monospace; font-size: 11px; }"
-        )
+        log_output.setProperty("log", True)
         return log_output
 
     def _create_pipeline_overview(self):
         """Create a short in-context explanation of what each backend stage does."""
         panel = QFrame()
         panel.setStyleSheet(
-            "QFrame { background-color: #ffffff; border: 1px solid #d8dee9; border-radius: 8px; padding: 10px; }"
+            f"QFrame {{ background-color: {THEME['pane']}; border: 1px solid {THEME['border']}; border-radius: {THEME['radius_md']}; padding: 10px; }}"
         )
         layout = QVBoxLayout()
         layout.setContentsMargins(12, 10, 12, 10)
@@ -936,7 +870,7 @@ class StepByStepDashboard(QWidget):
         panel.setLayout(layout)
 
         title = QLabel("Backend Stage Summary")
-        title.setStyleSheet("font-size: 15px; font-weight: bold; color: #1f3a5f;")
+        title.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {THEME['text']};")
         layout.addWidget(title)
 
         summary = QLabel(
@@ -950,7 +884,7 @@ class StepByStepDashboard(QWidget):
             "from <code>/camera/camera_info</code> and the LiDAR-camera extrinsic is solved."
         )
         summary.setWordWrap(True)
-        summary.setStyleSheet("color: #374151; line-height: 1.35;")
+        summary.setStyleSheet(f"color: {THEME['muted']}; line-height: 1.35;")
         layout.addWidget(summary)
 
         legend = QLabel(
@@ -958,7 +892,7 @@ class StepByStepDashboard(QWidget):
             "button to open that stage's actual details, guide, parameters, or configuration. Calibration is intentionally separate from this table."
         )
         legend.setWordWrap(True)
-        legend.setStyleSheet("color: #4b5563;")
+        legend.setStyleSheet(f"color: {THEME['muted']};")
         layout.addWidget(legend)
         return panel
     
@@ -989,14 +923,14 @@ class StepByStepDashboard(QWidget):
         table.setAlternatingRowColors(True)
         
         # Fix row height
-        table.verticalHeader().setDefaultSectionSize(104)
+        table.verticalHeader().setDefaultSectionSize(120)
         
         # Column sizing
         header = table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)  # Scan Name
         for i in range(1, len(columns) - 1):  # Step columns
             header.setSectionResizeMode(i, QHeaderView.Fixed)
-            table.setColumnWidth(i, 205)
+            table.setColumnWidth(i, 225)
         header.setSectionResizeMode(len(columns) - 1, QHeaderView.Fixed)  # Actions
         table.setColumnWidth(len(columns) - 1, 520)
         
@@ -1106,16 +1040,16 @@ class StepByStepDashboard(QWidget):
         widget = QWidget()
         layout = QVBoxLayout()
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(3)
+        layout.setSpacing(5)
         widget.setLayout(layout)
         widget.setToolTip(step_info["summary"])
-        widget.setMinimumHeight(96)
+        widget.setMinimumHeight(112)
 
         # Checkbox for completion
         checkbox = QCheckBox("Complete")
         checkbox.setStyleSheet(
-            "QCheckBox { color: #1f2937; spacing: 8px; }"
-            "QCheckBox::indicator { width: 16px; height: 16px; border: 2px solid #64748B; border-radius: 3px; background: #FFFFFF; }"
+            f"QCheckBox {{ color: {THEME['text']}; spacing: 8px; }}"
+            f"QCheckBox::indicator {{ width: 16px; height: 16px; border: 2px solid {THEME['border_strong']}; border-radius: 3px; background: {THEME['input']}; }}"
             "QCheckBox::indicator:checked { background: #673AB7; border: 2px solid #673AB7; }"
         )
         checkbox.setChecked(status_dict.get(step_key) == "done")
@@ -1129,9 +1063,9 @@ class StepByStepDashboard(QWidget):
             pose_cfg = self.scans_data.get(scan_name, {}).get("config", {}).get("pose_recovery", {})
             rviz_checkbox = QCheckBox("Show RViz")
             rviz_checkbox.setStyleSheet(
-                "QCheckBox { color: #1f2937; spacing: 8px; }"
-                "QCheckBox::indicator { width: 16px; height: 16px; border: 2px solid #64748B; border-radius: 3px; background: #FFFFFF; }"
-                "QCheckBox::indicator:checked { background: #673AB7; border: 2px solid #673AB7; }"
+                f"QCheckBox {{ color: {THEME['text']}; spacing: 8px; }}"
+                f"QCheckBox::indicator {{ width: 16px; height: 16px; border: 2px solid {THEME['border_strong']}; border-radius: 3px; background: {THEME['input']}; }}"
+                f"QCheckBox::indicator:checked {{ background: #7c3aed; border: 2px solid #7c3aed; }}"
             )
             rviz_checkbox.setChecked(bool(pose_cfg.get("enable_rviz", False)))
             rviz_checkbox.setToolTip(
@@ -1145,67 +1079,35 @@ class StepByStepDashboard(QWidget):
         # Buttons layout
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(4)
+        btn_layout.setContentsMargins(0, 2, 0, 0)
 
         btn_run = QPushButton("Run")
-        btn_run.setStyleSheet("""
-            QPushButton {
-                background-color: #673AB7;
-                color: white;
-                border: none;
-                padding: 4px 8px;
-                border-radius: 3px;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #5E35B1;
-            }
-        """)
+        btn_run.setStyleSheet(compact_step_button_style("#7c3aed", "#8b5cf6"))
         btn_run.setToolTip(step_info["run_tooltip"])
-        btn_run.setFixedHeight(24)
+        btn_run.setFixedHeight(30)
+        btn_run.setMinimumWidth(56)
         btn_run.clicked.connect(
             lambda checked=False, sp=str(self.assets_path / scan_name), sk=step_key: self.runStepRequested.emit(sp, sk)
         )
-        btn_layout.addWidget(btn_run)
+        btn_layout.addWidget(btn_run, 1)
         
         # View button
         btn_view = QPushButton("View")
-        btn_view.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                border: none;
-                padding: 4px 8px;
-                border-radius: 3px;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #0b7dda;
-            }
-        """)
+        btn_view.setStyleSheet(compact_step_button_style(THEME["accent"], THEME["accent_hover"]))
         btn_view.setToolTip(step_info["view_tooltip"])
-        btn_view.setFixedHeight(24)
+        btn_view.setFixedHeight(30)
+        btn_view.setMinimumWidth(60)
         btn_view.clicked.connect(lambda: self._on_view_step(scan_name, step_key))
-        btn_layout.addWidget(btn_view)
+        btn_layout.addWidget(btn_view, 1)
 
         # Context button
         btn_modify = QPushButton(step_info["modify_label"])
-        btn_modify.setStyleSheet("""
-            QPushButton {
-                background-color: #FF9800;
-                color: white;
-                border: none;
-                padding: 4px 8px;
-                border-radius: 3px;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #F57C00;
-            }
-        """)
+        btn_modify.setStyleSheet(compact_step_button_style(THEME["warning"], "#fbbf24", text="#111827"))
         btn_modify.setToolTip(step_info["modify_tooltip"])
-        btn_modify.setFixedHeight(24)
+        btn_modify.setFixedHeight(30)
+        btn_modify.setMinimumWidth(70)
         btn_modify.clicked.connect(lambda: self._on_modify_step(scan_name, step_key))
-        btn_layout.addWidget(btn_modify)
+        btn_layout.addWidget(btn_modify, 1)
         
         layout.addLayout(btn_layout)
         
@@ -1229,81 +1131,25 @@ class StepByStepDashboard(QWidget):
 
         # View Result button
         btn_view = QPushButton("View Result")
-        btn_view.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                border: none;
-                padding: 6px 12px;
-                border-radius: 4px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
+        btn_view.setStyleSheet(button_style(THEME["success"], "#4ade80"))
         btn_view.clicked.connect(lambda: self.openViewerRequested.emit(str(self.assets_path / scan_name)))
         btn_view.setToolTip("Open the combined semantic viewer for this scan.")
         layout.addWidget(btn_view)
 
         btn_run_full = QPushButton("Run Full")
-        btn_run_full.setStyleSheet("""
-            QPushButton {
-                background-color: #673AB7;
-                color: white;
-                border: none;
-                padding: 6px 10px;
-                border-radius: 4px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #5E35B1;
-            }
-        """)
+        btn_run_full.setStyleSheet(button_style("#7c3aed", "#8b5cf6"))
         btn_run_full.clicked.connect(lambda: self.runPipelineRequested.emit(str(self.assets_path / scan_name)))
         btn_run_full.setToolTip("Run the automated backend chain for this scan.")
         layout.addWidget(btn_run_full)
 
         btn_map = QPushButton("Map")
-        btn_map.setStyleSheet("""
-            QPushButton {
-                background-color: #1976D2;
-                color: white;
-                border: none;
-                padding: 6px 10px;
-                border-radius: 4px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #125A9C;
-            }
-        """)
+        btn_map.setStyleSheet(button_style(THEME["accent"], THEME["accent_hover"]))
         btn_map.clicked.connect(lambda: self.openMapRequested.emit(str(self.assets_path / scan_name)))
         btn_map.setToolTip("Open the Leaflet map for this scan if fusion objects and/or powerline overlays exist.")
         layout.addWidget(btn_map)
 
         btn_pcd = QPushButton("PCD")
-        btn_pcd.setStyleSheet("""
-            QPushButton {
-                background-color: #2563EB;
-                color: white;
-                border: none;
-                padding: 6px 10px;
-                border-radius: 4px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover:enabled {
-                background-color: #1D4ED8;
-            }
-            QPushButton:disabled {
-                background-color: #CBD5E1;
-                color: #64748B;
-            }
-        """)
+        btn_pcd.setStyleSheet(button_style("#2563eb", "#1d4ed8"))
         btn_pcd.setEnabled(pcd_ready)
         btn_pcd.setToolTip(
             "Open the latest SLAM point cloud in the Open3D viewer."
@@ -1315,24 +1161,7 @@ class StepByStepDashboard(QWidget):
         layout.addWidget(btn_pcd)
 
         btn_images = QPushButton("Images")
-        btn_images.setStyleSheet("""
-            QPushButton {
-                background-color: #0F766E;
-                color: white;
-                border: none;
-                padding: 6px 10px;
-                border-radius: 4px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover:enabled {
-                background-color: #115E59;
-            }
-            QPushButton:disabled {
-                background-color: #CBD5E1;
-                color: #64748B;
-            }
-        """)
+        btn_images.setStyleSheet(button_style("#0f766e", "#115e59"))
         btn_images.setEnabled(images_ready)
         btn_images.setToolTip(
             "Open the folder containing the exported JPG frames."
@@ -1344,20 +1173,9 @@ class StepByStepDashboard(QWidget):
         layout.addWidget(btn_images)
         
         # Delete button
-        btn_delete = QPushButton("🗑")
+        btn_delete = QPushButton("Delete")
         btn_delete.setToolTip("Delete scan")
-        btn_delete.setStyleSheet("""
-            QPushButton {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
-                padding: 6px 10px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #ffebee;
-                border-color: #F44336;
-            }
-        """)
+        btn_delete.setStyleSheet(button_style(THEME["danger"], "#f87171"))
         btn_delete.clicked.connect(lambda: self._delete_scan(scan_name))
         layout.addWidget(btn_delete)
         

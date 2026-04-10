@@ -12,6 +12,7 @@ from PySide6.QtGui import QUndoStack, QUndoCommand
 from PySide6.QtCore import Qt, Signal, QTimer, QThread
 from pyvistaqt import QtInteractor
 from scipy.spatial import cKDTree
+from theme import THEME, button_style, subtle_button_style
 
 try:
     from native import pointcloud_filter_accel as pc_accel
@@ -240,6 +241,7 @@ class PointCloudFilterViewer(QWidget):
         super().__init__(parent)
         self.setWindowTitle("Point Cloud Filter Viewer")
         self.resize(1400, 800)
+        self.setObjectName("pointCloudFilterViewer")
 
         self.filename = filename
 
@@ -269,6 +271,35 @@ class PointCloudFilterViewer(QWidget):
         self._setup_ui()
         
     def _setup_ui(self):
+        self.setStyleSheet(
+            f"""
+            QWidget#pointCloudFilterViewer {{
+                background-color: {THEME['bg']};
+                color: {THEME['text']};
+            }}
+            QWidget#pointCloudFilterViewer QGroupBox {{
+                background-color: {THEME['pane']};
+                border: 1px solid {THEME['border']};
+                border-radius: {THEME['radius_md']};
+                margin-top: 14px;
+                padding-top: 14px;
+                font-weight: 600;
+            }}
+            QWidget#pointCloudFilterViewer QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 6px;
+                color: {THEME['text']};
+            }}
+            QWidget#pointCloudFilterViewer QScrollArea {{
+                border: none;
+                background: transparent;
+            }}
+            QWidget#pointCloudFilterViewer QLabel {{
+                color: {THEME['text']};
+            }}
+            """
+        )
         main_layout = QHBoxLayout()
         self.setLayout(main_layout)
         
@@ -285,7 +316,12 @@ class PointCloudFilterViewer(QWidget):
         
     def _create_viewer_widget(self):
         widget = QWidget()
+        widget.setProperty("card", True)
+        widget.setStyleSheet(
+            f"QWidget {{ background-color: {THEME['pane']}; border: 1px solid {THEME['border']}; border-radius: {THEME['radius_md']}; }}"
+        )
         layout = QVBoxLayout()
+        layout.setContentsMargins(12, 12, 12, 12)
         widget.setLayout(layout)
         
         self.plotter = QtInteractor(self)
@@ -295,26 +331,32 @@ class PointCloudFilterViewer(QWidget):
         controls_layout = QHBoxLayout()
         
         btn_load = QPushButton("Load Point Cloud")
+        btn_load.setStyleSheet(button_style(THEME["accent"], THEME["accent_hover"]))
         btn_load.clicked.connect(self.load_point_cloud)
         controls_layout.addWidget(btn_load)
-        
+
         btn_reset = QPushButton("Reset to Original")
+        btn_reset.setStyleSheet(subtle_button_style())
         btn_reset.clicked.connect(self.reset_to_original)
         controls_layout.addWidget(btn_reset)
-        
+
         btn_undo = QPushButton("Undo")
+        btn_undo.setStyleSheet(subtle_button_style())
         btn_undo.clicked.connect(self.undo_stack.undo)
         controls_layout.addWidget(btn_undo)
-        
+
         btn_redo = QPushButton("Redo")
+        btn_redo.setStyleSheet(subtle_button_style())
         btn_redo.clicked.connect(self.undo_stack.redo)
         controls_layout.addWidget(btn_redo)
-        
+
         btn_save = QPushButton("Save Filtered Cloud and Return")
+        btn_save.setStyleSheet(button_style(THEME["success"], "#4ade80"))
         btn_save.clicked.connect(self.save_las_file)
         controls_layout.addWidget(btn_save)
 
         btn_cancel = QPushButton("Cancel")
+        btn_cancel.setStyleSheet(button_style(THEME["danger"], "#f87171"))
         btn_cancel.clicked.connect(self.backRequested)
         controls_layout.addWidget(btn_cancel)
 
@@ -329,12 +371,16 @@ class PointCloudFilterViewer(QWidget):
         
     def _create_control_panel(self):
         outer_widget = QWidget()
+        outer_widget.setProperty("card", True)
+        outer_widget.setStyleSheet(
+            f"QWidget {{ background-color: {THEME['pane']}; border: 1px solid {THEME['border']}; border-radius: {THEME['radius_md']}; }}"
+        )
         outer_layout = QVBoxLayout()
-        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setContentsMargins(12, 12, 12, 12)
         outer_widget.setLayout(outer_layout)
 
         title = QLabel("Filtering Controls")
-        title.setStyleSheet("font-weight: bold; font-size: 16px; padding: 8px;")
+        title.setStyleSheet(f"font-weight: bold; font-size: 16px; padding: 8px; color: {THEME['text']};")
         outer_layout.addWidget(title)
 
         # Scroll area so the panel never gets cramped
@@ -448,7 +494,7 @@ class PointCloudFilterViewer(QWidget):
             "neighbors within a given search radius."
         )
         lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet("color: gray; font-size: 11px;")
+        lbl_desc.setStyleSheet(f"color: {THEME['muted']}; font-size: 11px;")
         layout.addWidget(lbl_desc)
 
         layout.addWidget(QLabel("Search Radius (m):"))
@@ -501,7 +547,7 @@ class PointCloudFilterViewer(QWidget):
             "neighbors. Strength 0 = no change, 1 = fully move to average."
         )
         lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet("color: gray; font-size: 11px;")
+        lbl_desc.setStyleSheet(f"color: {THEME['muted']}; font-size: 11px;")
         layout.addWidget(lbl_desc)
 
         layout.addWidget(QLabel("Number of Neighbors (k):"))
@@ -554,7 +600,7 @@ class PointCloudFilterViewer(QWidget):
             "viewer. Click 'Apply Crop' to keep only points inside."
         )
         lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet("color: gray; font-size: 11px;")
+        lbl_desc.setStyleSheet(f"color: {THEME['muted']}; font-size: 11px;")
         layout.addWidget(lbl_desc)
 
         # Helper to build one axis row (min + max spin boxes)

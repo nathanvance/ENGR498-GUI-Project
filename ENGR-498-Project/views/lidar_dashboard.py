@@ -20,6 +20,7 @@ from PySide6.QtGui import QColor, QFont, QIcon
 
 from scan_metadata import load_scan_metadata, resolve_scan_path, save_scan_metadata
 from timing_settings import load_global_timing_settings, save_global_timing_settings
+from theme import THEME, button_style, notification_item_style, notification_panel_style, subtle_button_style
 
 
 class StatusIndicator(QWidget):
@@ -76,17 +77,11 @@ class NotificationPanel(QWidget):
         self.setLayout(layout)
         
         # Style
-        self.setStyleSheet("""
-            QWidget {
-                background-color: white;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-            }
-        """)
+        self.setStyleSheet(notification_panel_style())
         
         # Header
         header = QLabel("Notifications")
-        header.setStyleSheet("font-size: 16px; font-weight: bold; border: none;")
+        header.setStyleSheet(f"font-size: 16px; font-weight: bold; border: none; color: {THEME['text']};")
         layout.addWidget(header)
         
         # Scroll area for notifications
@@ -103,31 +98,13 @@ class NotificationPanel(QWidget):
         # Clear button
         btn_clear = QPushButton("Clear All")
         btn_clear.clicked.connect(self.clear_notifications)
-        btn_clear.setStyleSheet("""
-            QPushButton {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
-                padding: 6px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #e0e0e0;
-            }
-        """)
+        btn_clear.setStyleSheet(subtle_button_style())
         layout.addWidget(btn_clear)
     
     def add_notification(self, message, status="info"):
         """Add a notification"""
         notif_widget = QFrame()
-        notif_widget.setStyleSheet("""
-            QFrame {
-                background-color: #f9f9f9;
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
-                padding: 8px;
-                margin: 2px;
-            }
-        """)
+        notif_widget.setStyleSheet(notification_item_style())
         
         notif_layout = QHBoxLayout()
         notif_layout.setContentsMargins(4, 4, 4, 4)
@@ -151,7 +128,7 @@ class NotificationPanel(QWidget):
         
         # Timestamp
         time_label = QLabel(datetime.now().strftime("%H:%M"))
-        time_label.setStyleSheet("color: #999; border: none; background: transparent;")
+        time_label.setStyleSheet(f"color: {THEME['muted']}; border: none; background: transparent;")
         notif_layout.addWidget(time_label)
         
         self.notification_layout.insertWidget(0, notif_widget)
@@ -234,45 +211,46 @@ class DashboardView(QWidget):
         
         # Status bar
         self.status_label = QLabel("Post-Processing Auto Mode runs Rosbag Preprocessing, Wires, Image Inference, and Fusion + GPS as one backend chain. Calibration is a separate mode.")
-        self.status_label.setStyleSheet("color: #666; padding: 8px;")
+        self.status_label.setStyleSheet(f"color: {THEME['muted']}; padding: 8px;")
         main_layout.addWidget(self.status_label)
         
         # Apply global styles
-        self.setStyleSheet("""
-            QWidget {
-                background-color: #f6f7fb;
-                color: #1f2937;
-                font-family: 'Segoe UI', Arial, sans-serif;
-            }
-            QLabel {
-                color: #1f2937;
+        self.setStyleSheet(
+            f"""
+            QWidget {{
+                background-color: {THEME['bg']};
+                color: {THEME['text']};
+            }}
+            QLabel {{
+                color: {THEME['text']};
                 background: transparent;
-            }
-            QTableWidget {
-                background-color: white;
-                color: #1f2937;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-                gridline-color: #e0e0e0;
-                alternate-background-color: #f9fbff;
-            }
-            QTableWidget::item {
+            }}
+            QTableWidget {{
+                background-color: {THEME['input']};
+                color: {THEME['text']};
+                border: 1px solid {THEME['border']};
+                border-radius: {THEME['radius_md']};
+                gridline-color: {THEME['border']};
+                alternate-background-color: {THEME['pane']};
+            }}
+            QTableWidget::item {{
                 padding: 8px;
-                color: #1f2937;
-            }
-            QTableWidget::item:selected {
-                background-color: #dbeafe;
-                color: #111827;
-            }
-            QHeaderView::section {
-                background-color: #f5f5f5;
-                color: #111827;
+                color: {THEME['text']};
+            }}
+            QTableWidget::item:selected {{
+                background-color: {THEME['selection']};
+                color: #ffffff;
+            }}
+            QHeaderView::section {{
+                background-color: {THEME['pane_raised']};
+                color: {THEME['text']};
                 padding: 10px;
                 border: none;
-                border-bottom: 2px solid #2196F3;
+                border-bottom: 1px solid {THEME['border_strong']};
                 font-weight: bold;
-            }
-        """)
+            }}
+            """
+        )
     
     def _create_top_bar(self):
         """Create top bar with title and notifications"""
@@ -287,7 +265,7 @@ class DashboardView(QWidget):
         title_font.setPointSize(20)
         title_font.setBold(True)
         title.setFont(title_font)
-        title.setStyleSheet("color: #1976D2;")
+        title.setStyleSheet(f"color: {THEME['text']};")
         layout.addWidget(title)
         
         # Mode badge
@@ -330,56 +308,22 @@ class DashboardView(QWidget):
     def _create_controls_bar(self):
         """Create controls bar with buttons"""
         bar = QFrame()
-        bar.setStyleSheet("""
-            QFrame {
-                background-color: white;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-                padding: 12px;
-            }
-        """)
+        bar.setStyleSheet(
+            f"QFrame {{ background-color: {THEME['pane']}; border: 1px solid {THEME['border']}; border-radius: {THEME['radius_md']}; padding: 12px; }}"
+        )
         layout = QHBoxLayout()
         bar.setLayout(layout)
         
         # Create New Scan button
         btn_new_scan = QPushButton("➕ Create New Scan")
-        btn_new_scan.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
+        btn_new_scan.setStyleSheet(button_style(THEME["success"], "#4ade80"))
         btn_new_scan.clicked.connect(self.createScanRequested.emit)
         layout.addWidget(btn_new_scan)
         
         # Run Full Pipeline button
         self.btn_run_pipeline = QPushButton("▶️ Run Full Pipeline")
         self.btn_run_pipeline.setEnabled(False)
-        self.btn_run_pipeline.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QPushButton:hover:enabled {
-                background-color: #0b7dda;
-            }
-            QPushButton:disabled {
-                background-color: #bbb;
-            }
-        """)
+        self.btn_run_pipeline.setStyleSheet(button_style(THEME["accent"], THEME["accent_hover"]))
         self.btn_run_pipeline.setToolTip("Run the automated backend chain for the selected scan: Rosbag Preprocessing -> Wires -> Image Inference -> Fusion + GPS.")
         self.btn_run_pipeline.clicked.connect(self._run_full_pipeline)
         layout.addWidget(self.btn_run_pipeline)
@@ -396,20 +340,7 @@ class DashboardView(QWidget):
         btn_global_settings.setToolTip(
             "Set global timing defaults, the GPS developer-mode override, and the Fusion visualization default."
         )
-        btn_global_settings.setStyleSheet("""
-            QPushButton {
-                background-color: #0F766E;
-                color: white;
-                border: none;
-                padding: 10px 18px;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #115E59;
-            }
-        """)
+        btn_global_settings.setStyleSheet(button_style("#0f766e", "#14b8a6"))
         btn_global_settings.clicked.connect(self._open_global_settings_dialog)
         layout.addWidget(btn_global_settings)
         
@@ -418,38 +349,14 @@ class DashboardView(QWidget):
         # Switch to Step-by-Step Mode button
         btn_step_mode = QPushButton("🔧 Step-by-Step Mode")
         btn_step_mode.setToolTip("Switch to advanced step-by-step processing mode")
-        btn_step_mode.setStyleSheet("""
-            QPushButton {
-                background-color: #673AB7;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #5E35B1;
-            }
-        """)
+        btn_step_mode.setStyleSheet(button_style("#7c3aed", "#8b5cf6"))
         btn_step_mode.clicked.connect(self.switchToStepModeRequested.emit)
         layout.addWidget(btn_step_mode)
         
         # Refresh button
         btn_refresh = QPushButton("🔄")
         btn_refresh.setToolTip("Refresh scans")
-        btn_refresh.setStyleSheet("""
-            QPushButton {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
-                padding: 8px 12px;
-                border-radius: 4px;
-                font-size: 16px;
-            }
-            QPushButton:hover {
-                background-color: #e0e0e0;
-            }
-        """)
+        btn_refresh.setStyleSheet(subtle_button_style())
         btn_refresh.clicked.connect(lambda: self.refresh_scans(force=True))
         layout.addWidget(btn_refresh)
         
@@ -508,10 +415,7 @@ class DashboardView(QWidget):
         log_output.setReadOnly(True)
         log_output.setMinimumHeight(170)
         log_output.setPlaceholderText("Backend console output will appear here during rosbag preprocessing, wire extraction, inference, and fusion.")
-        log_output.setStyleSheet(
-            "QTextEdit { background-color: #0f172a; color: #e5e7eb; border: 1px solid #1f2937; "
-            "border-radius: 8px; padding: 8px; font-family: Consolas, 'Courier New', monospace; font-size: 11px; }"
-        )
+        log_output.setProperty("log", True)
         return log_output
     
     def _setup_refresh_timer(self):
@@ -663,58 +567,18 @@ class DashboardView(QWidget):
         # View Result button (if any step is complete)
         if any(s == "done" for s in status_dict.values()):
             btn_view = QPushButton("View Result")
-            btn_view.setStyleSheet("""
-                QPushButton {
-                    background-color: #4CAF50;
-                    color: white;
-                    border: none;
-                    padding: 6px 12px;
-                    border-radius: 4px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #45a049;
-                }
-            """)
+            btn_view.setStyleSheet(button_style(THEME["success"], "#4ade80"))
             scan_path = str(self.assets_path / scan_name)
             btn_view.clicked.connect(lambda checked=False, sp=scan_path: self.openViewerRequested.emit(sp))
             layout.addWidget(btn_view)
 
             btn_map = QPushButton("Map")
-            btn_map.setStyleSheet("""
-                QPushButton {
-                    background-color: #1976D2;
-                    color: white;
-                    border: none;
-                    padding: 6px 10px;
-                    border-radius: 4px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #125A9C;
-                }
-            """)
+            btn_map.setStyleSheet(button_style(THEME["accent"], THEME["accent_hover"]))
             btn_map.clicked.connect(lambda checked=False, sp=scan_path: self.openMapRequested.emit(sp))
             layout.addWidget(btn_map)
 
         btn_pcd = QPushButton("PCD")
-        btn_pcd.setStyleSheet("""
-            QPushButton {
-                background-color: #2563EB;
-                color: white;
-                border: none;
-                padding: 6px 10px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover:enabled {
-                background-color: #1D4ED8;
-            }
-            QPushButton:disabled {
-                background-color: #CBD5E1;
-                color: #64748B;
-            }
-        """)
+        btn_pcd.setStyleSheet(button_style("#2563eb", "#1d4ed8"))
         btn_pcd.setEnabled(pcd_ready)
         btn_pcd.setToolTip(
             "Open the latest SLAM point cloud in the Open3D viewer."
@@ -726,23 +590,7 @@ class DashboardView(QWidget):
         layout.addWidget(btn_pcd)
 
         btn_images = QPushButton("Images")
-        btn_images.setStyleSheet("""
-            QPushButton {
-                background-color: #0F766E;
-                color: white;
-                border: none;
-                padding: 6px 10px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover:enabled {
-                background-color: #115E59;
-            }
-            QPushButton:disabled {
-                background-color: #CBD5E1;
-                color: #64748B;
-            }
-        """)
+        btn_images.setStyleSheet(button_style("#0f766e", "#115e59"))
         btn_images.setEnabled(images_ready)
         btn_images.setToolTip(
             "Open the folder containing exported JPG frames."
@@ -754,20 +602,9 @@ class DashboardView(QWidget):
         layout.addWidget(btn_images)
         
         # Delete button
-        btn_delete = QPushButton("🗑")
+        btn_delete = QPushButton("Delete")
         btn_delete.setToolTip("Delete scan")
-        btn_delete.setStyleSheet("""
-            QPushButton {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
-                padding: 6px 10px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #ffebee;
-                border-color: #F44336;
-            }
-        """)
+        btn_delete.setStyleSheet(button_style(THEME["danger"], "#f87171"))
         btn_delete.clicked.connect(lambda: self._delete_scan(scan_name))
         layout.addWidget(btn_delete)
         
@@ -1009,63 +846,19 @@ class StepButton(QPushButton):
         if self.status == "done":
             self.setText("View")
             self.setEnabled(True)
-            self.setStyleSheet("""
-                QPushButton {
-                    background-color: #4CAF50;
-                    color: white;
-                    border: none;
-                    padding: 6px 12px;
-                    border-radius: 4px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #45a049;
-                }
-            """)
+            self.setStyleSheet(button_style(THEME["success"], "#4ade80"))
         elif self.status == "running":
             self.setText("Running...")
             self.setEnabled(False)
-            self.setStyleSheet("""
-                QPushButton {
-                    background-color: #FF9800;
-                    color: white;
-                    border: none;
-                    padding: 6px 12px;
-                    border-radius: 4px;
-                }
-            """)
+            self.setStyleSheet(button_style(THEME["warning"], "#fbbf24", text="#111827"))
         elif self.status == "error":
             self.setText("Retry")
             self.setEnabled(True)
-            self.setStyleSheet("""
-                QPushButton {
-                    background-color: #F44336;
-                    color: white;
-                    border: none;
-                    padding: 6px 12px;
-                    border-radius: 4px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #da190b;
-                }
-            """)
+            self.setStyleSheet(button_style(THEME["danger"], "#f87171"))
         else:  # pending
             self.setText("Run")
             self.setEnabled(True)
-            self.setStyleSheet("""
-                QPushButton {
-                    background-color: #2196F3;
-                    color: white;
-                    border: none;
-                    padding: 6px 12px;
-                    border-radius: 4px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #0b7dda;
-                }
-            """)
+            self.setStyleSheet(button_style(THEME["accent"], THEME["accent_hover"]))
     
     def _on_clicked(self):
         """Handle button click"""
@@ -1098,17 +891,11 @@ class NotificationPanel(QWidget):
         self.setLayout(layout)
         
         # Style
-        self.setStyleSheet("""
-            QWidget {
-                background-color: white;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-            }
-        """)
+        self.setStyleSheet(notification_panel_style())
         
         # Header
         header = QLabel("Notifications")
-        header.setStyleSheet("font-size: 16px; font-weight: bold; border: none;")
+        header.setStyleSheet(f"font-size: 16px; font-weight: bold; border: none; color: {THEME['text']};")
         layout.addWidget(header)
         
         # Scroll area for notifications
@@ -1125,31 +912,13 @@ class NotificationPanel(QWidget):
         # Clear button
         btn_clear = QPushButton("Clear All")
         btn_clear.clicked.connect(self.clear_notifications)
-        btn_clear.setStyleSheet("""
-            QPushButton {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
-                padding: 6px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #e0e0e0;
-            }
-        """)
+        btn_clear.setStyleSheet(subtle_button_style())
         layout.addWidget(btn_clear)
     
     def add_notification(self, message, status="info"):
         """Add a notification"""
         notif_widget = QFrame()
-        notif_widget.setStyleSheet("""
-            QFrame {
-                background-color: #f9f9f9;
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
-                padding: 8px;
-                margin: 2px;
-            }
-        """)
+        notif_widget.setStyleSheet(notification_item_style())
         
         notif_layout = QHBoxLayout()
         notif_layout.setContentsMargins(4, 4, 4, 4)
@@ -1173,7 +942,7 @@ class NotificationPanel(QWidget):
         
         # Timestamp
         time_label = QLabel(datetime.now().strftime("%H:%M"))
-        time_label.setStyleSheet("color: #999; border: none; background: transparent;")
+        time_label.setStyleSheet(f"color: {THEME['muted']}; border: none; background: transparent;")
         notif_layout.addWidget(time_label)
         
         self.notification_layout.insertWidget(0, notif_widget)

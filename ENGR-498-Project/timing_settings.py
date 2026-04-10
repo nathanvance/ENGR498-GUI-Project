@@ -18,6 +18,9 @@ DEFAULT_GUI_SETTINGS = {
     "gps": {
         "allow_missing": False,
     },
+    "pose_recovery": {
+        "blur_filter_enabled": True,
+    },
 }
 
 
@@ -88,4 +91,11 @@ def resolve_global_gps_settings() -> dict[str, Any]:
     global_cfg = load_global_gui_settings().get("gps", {})
     return {
         "allow_missing": bool(global_cfg.get("allow_missing", False)),
+    }
+
+
+def resolve_global_pose_recovery_settings() -> dict[str, Any]:
+    global_cfg = load_global_gui_settings().get("pose_recovery", {})
+    return {
+        "blur_filter_enabled": bool(global_cfg.get("blur_filter_enabled", True)),
     }

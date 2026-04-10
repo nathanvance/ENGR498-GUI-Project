@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from theme import THEME, button_style, subtle_button_style
+
 
 class CalibrationModeView(QWidget):
     """Standalone mode for direct visual LiDAR calibration workflow."""
@@ -35,28 +37,10 @@ class CalibrationModeView(QWidget):
         layout.setSpacing(12)
         self.setLayout(layout)
 
-        self.setStyleSheet(
-            """
-            QWidget { background-color: #f6f7fb; color: #1f2937; font-family: 'Segoe UI', Arial, sans-serif; }
-            QLabel { color: #1f2937; }
-            QLineEdit, QTextEdit {
-                background-color: #ffffff;
-                color: #111827;
-                border: 1px solid #d1d5db;
-                border-radius: 6px;
-                padding: 8px;
-            }
-            QPushButton {
-                border: none;
-                border-radius: 6px;
-                padding: 10px 16px;
-                font-weight: bold;
-            }
-            """
-        )
+        self.setObjectName("calibrationModeView")
 
         title = QLabel("Calibration Mode")
-        title.setStyleSheet("font-size: 22px; font-weight: bold; color: #673AB7;")
+        title.setStyleSheet(f"font-size: 22px; font-weight: bold; color: {THEME['text']};")
         layout.addWidget(title)
 
         summary = QLabel(
@@ -64,11 +48,14 @@ class CalibrationModeView(QWidget):
             "Calibration is a prerequisite for post-processing Fusion because Fusion consumes the completed calibration output."
         )
         summary.setWordWrap(True)
-        summary.setStyleSheet("color: #374151;")
+        summary.setStyleSheet(f"color: {THEME['muted']};")
         layout.addWidget(summary)
 
         requirements = QFrame()
-        requirements.setStyleSheet("QFrame { background-color: #fff7ed; border: 1px solid #fdba74; border-radius: 8px; }")
+        requirements.setProperty("card", True)
+        requirements.setStyleSheet(
+            f"QFrame {{ background-color: {THEME['pane_raised']}; border: 1px solid {THEME['warning']}; border-radius: {THEME['radius_md']}; }}"
+        )
         requirements_layout = QVBoxLayout()
         requirements_layout.setContentsMargins(12, 10, 12, 10)
         requirements.setLayout(requirements_layout)
@@ -83,7 +70,10 @@ class CalibrationModeView(QWidget):
         layout.addWidget(requirements)
 
         notes = QFrame()
-        notes.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #d8dee9; border-radius: 8px; }")
+        notes.setProperty("card", True)
+        notes.setStyleSheet(
+            f"QFrame {{ background-color: {THEME['pane']}; border: 1px solid {THEME['border']}; border-radius: {THEME['radius_md']}; }}"
+        )
         notes_layout = QVBoxLayout()
         notes_layout.setContentsMargins(12, 10, 12, 10)
         notes.setLayout(notes_layout)
@@ -104,7 +94,7 @@ class CalibrationModeView(QWidget):
         self.dataset_edit.setPlaceholderText("Select the calibration dataset folder that contains one or more .bag files")
         dataset_row.addWidget(self.dataset_edit, stretch=1)
         browse_btn = QPushButton("Browse Dataset")
-        browse_btn.setStyleSheet("QPushButton { background-color: #1976D2; color: white; }")
+        browse_btn.setStyleSheet(button_style(THEME["accent"], THEME["accent_hover"]))
         browse_btn.clicked.connect(self._browse_dataset)
         dataset_row.addWidget(browse_btn)
         layout.addLayout(dataset_row)
@@ -114,29 +104,29 @@ class CalibrationModeView(QWidget):
         self.run_name_edit.setPlaceholderText("Enter a calibration run name, e.g. field_cal_01")
         run_row.addWidget(self.run_name_edit, stretch=1)
         defaults_btn = QPushButton("Use Timestamp Name")
-        defaults_btn.setStyleSheet("QPushButton { background-color: #6B7280; color: white; }")
+        defaults_btn.setStyleSheet(subtle_button_style())
         defaults_btn.clicked.connect(self._apply_default_run_name)
         run_row.addWidget(defaults_btn)
         layout.addLayout(run_row)
 
         buttons_row = QHBoxLayout()
         check_btn = QPushButton("Check Requirements")
-        check_btn.setStyleSheet("QPushButton { background-color: #0F766E; color: white; }")
+        check_btn.setStyleSheet(button_style(THEME["info"], "#0891b2"))
         check_btn.clicked.connect(self.checkRequirementsRequested.emit)
         buttons_row.addWidget(check_btn)
 
         run_full_btn = QPushButton("Run Calibration")
-        run_full_btn.setStyleSheet("QPushButton { background-color: #673AB7; color: white; }")
+        run_full_btn.setStyleSheet(button_style("#7c3aed", "#8b5cf6"))
         run_full_btn.clicked.connect(lambda: self._emit_run(""))
         buttons_row.addWidget(run_full_btn)
 
         preprocess_btn = QPushButton("Preprocess Only")
-        preprocess_btn.setStyleSheet("QPushButton { background-color: #FF9800; color: white; }")
+        preprocess_btn.setStyleSheet(button_style(THEME["warning"], "#fbbf24", text="#111827"))
         preprocess_btn.clicked.connect(lambda: self._emit_run("preprocess"))
         buttons_row.addWidget(preprocess_btn)
 
         switch_btn = QPushButton("Go To Post-Processing")
-        switch_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
+        switch_btn.setStyleSheet(button_style(THEME["success"], "#4ade80"))
         switch_btn.clicked.connect(self.switchToPostProcessingRequested.emit)
         buttons_row.addWidget(switch_btn)
         buttons_row.addStretch()
@@ -146,21 +136,24 @@ class CalibrationModeView(QWidget):
             f"Calibration outputs are written under:<br><code>{self.default_output_root.as_posix()}</code>"
         )
         output_note.setWordWrap(True)
-        output_note.setStyleSheet("color: #4b5563;")
+        output_note.setStyleSheet(f"color: {THEME['muted']};")
         layout.addWidget(output_note)
 
         self.requirements_status_label = QLabel("Requirements check not run yet.")
         self.requirements_status_label.setWordWrap(True)
-        self.requirements_status_label.setStyleSheet("color: #374151; background-color: #eef2ff; border: 1px solid #c7d2fe; border-radius: 6px; padding: 8px;")
+        self.requirements_status_label.setStyleSheet(
+            f"color: {THEME['text']}; background-color: {THEME['pane_raised']}; border: 1px solid {THEME['border']}; border-radius: {THEME['radius_sm']}; padding: 8px;"
+        )
         layout.addWidget(self.requirements_status_label)
 
         self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("color: #374151; padding-top: 6px;")
+        self.status_label.setStyleSheet(f"color: {THEME['muted']}; padding-top: 6px;")
         layout.addWidget(self.status_label)
 
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setMinimumHeight(280)
+        self.log_output.setProperty("log", True)
         layout.addWidget(self.log_output, stretch=1)
 
     def _browse_dataset(self):
@@ -194,17 +187,17 @@ class CalibrationModeView(QWidget):
         self.requirements_status_label.setText(message)
         if ok is True:
             style = (
-                "color: #14532d; background-color: #ecfdf5; border: 1px solid #86efac; "
+                f"color: {THEME['text']}; background-color: {THEME['pane_raised']}; border: 1px solid {THEME['success']}; "
                 "border-radius: 6px; padding: 8px;"
             )
         elif ok is False:
             style = (
-                "color: #991b1b; background-color: #fef2f2; border: 1px solid #fca5a5; "
+                f"color: {THEME['text']}; background-color: {THEME['pane_raised']}; border: 1px solid {THEME['danger']}; "
                 "border-radius: 6px; padding: 8px;"
             )
         else:
             style = (
-                "color: #374151; background-color: #eef2ff; border: 1px solid #c7d2fe; "
+                f"color: {THEME['text']}; background-color: {THEME['pane_raised']}; border: 1px solid {THEME['border']}; "
                 "border-radius: 6px; padding: 8px;"
             )
         self.requirements_status_label.setStyleSheet(style)

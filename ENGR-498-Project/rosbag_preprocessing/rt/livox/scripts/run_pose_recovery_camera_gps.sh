@@ -4,11 +4,12 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  run_pose_recovery_camera_gps.sh [bag_path] [--output-root DIR] [--image-topic TOPIC] [--gps-topic TOPIC] [--camera-time-offset-sec OFFSET] [--master-port PORT] [--remap RULE] [--rviz]
+  run_pose_recovery_camera_gps.sh [bag_path] [--output-root DIR] [--image-topic TOPIC] [--gps-topic TOPIC] [--camera-time-offset-sec OFFSET] [--blur-threshold VALUE] [--disable-blur-filter] [--master-port PORT] [--remap RULE] [--rviz]
 
 Examples:
   run_pose_recovery_camera_gps.sh ./data/my_run.bag
   run_pose_recovery_camera_gps.sh ./data/my_run.bag --image-topic /camera/image/compressed --gps-topic /fix
+  run_pose_recovery_camera_gps.sh ./data/my_run.bag --blur-threshold 120
   run_pose_recovery_camera_gps.sh ./data/my_run.bag --rviz
 EOF
 }
@@ -210,6 +211,8 @@ IMAGE_TOPIC_OVERRIDE=""
 GPS_TOPIC_OVERRIDE=""
 MASTER_PORT="${MASTER_PORT:-11311}"
 CAMERA_TIME_OFFSET_SEC="${CAMERA_TIME_OFFSET_SEC:-0.0}"
+BLUR_THRESHOLD="${BLUR_THRESHOLD:-100.0}"
+BLUR_FILTER_ENABLED="${BLUR_FILTER_ENABLED:-1}"
 UNPAUSE_DELAY_MS="${UNPAUSE_DELAY_MS:-3000}"
 DISCOVERY_TIMEOUT_WALL_SEC="${DISCOVERY_TIMEOUT_WALL_SEC:-30}"
 REMAPS=()
@@ -240,6 +243,14 @@ while [[ $# -gt 0 ]]; do
     --camera-time-offset-sec)
       CAMERA_TIME_OFFSET_SEC="$2"
       shift 2
+      ;;
+    --blur-threshold)
+      BLUR_THRESHOLD="$2"
+      shift 2
+      ;;
+    --disable-blur-filter)
+      BLUR_FILTER_ENABLED=0
+      shift
       ;;
     --remap)
       REMAPS+=("$2")
@@ -360,6 +371,8 @@ echo "[preflight] lidar type:       ${LIDAR_MSG_TYPE:-unknown}"
 echo "[preflight] lidar fields:     ${LIDAR_FIELD_NAMES:-unknown}"
 echo "[preflight] livox relay:      $([[ "$USE_LIVOX_POINTCLOUD2_RELAY" == "1" ]] && echo enabled || echo disabled)"
 echo "[preflight] images dir:       $IMAGE_OUT_DIR"
+echo "[preflight] blur threshold:   $BLUR_THRESHOLD"
+echo "[preflight] blur filter:      $([[ "$BLUR_FILTER_ENABLED" == "1" ]] && echo enabled || echo disabled)"
 echo "[preflight] rviz enabled:     ${RVIZ_ARG_VALUE}"
 
 SELECTED_MASTER_PORT="$(choose_master_port "$MASTER_PORT")" || {
@@ -560,8 +573,20 @@ fi
 python3 "$RUNTIME_HOME/ws_livox/scripts/sanitize_pose_recovery_outputs.py" \
   --gps-csv "$GPS_OUT_CSV"
 
+if [[ "$BLUR_FILTER_ENABLED" == "1" ]]; then
+  python3 "$RUNTIME_HOME/ws_livox/scripts/filter_blurry_pose_recovery_images.py" \
+    --images-dir "$IMAGE_OUT_DIR" \
+    --image-timestamps-csv "$IMAGE_TIMESTAMPS_CSV" \
+    --camera-csv "$CAMERA_OUT_CSV" \
+    --blur-threshold "$BLUR_THRESHOLD"
+else
+  echo "[blur-filter] disabled"
+fi
+
 echo "[done] images dir:   $IMAGE_OUT_DIR"
 echo "[done] image csv:    $IMAGE_TIMESTAMPS_CSV"
 echo "[done] camera csv:  $CAMERA_OUT_CSV"
 echo "[done] gps csv:     $GPS_OUT_CSV"
+echo "[done] blur threshold: $BLUR_THRESHOLD"
+echo "[done] blur filter: $([[ "$BLUR_FILTER_ENABLED" == "1" ]] && echo enabled || echo disabled)"
 echo "[done] logs dir:    $LOG_DIR"

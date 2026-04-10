@@ -30,6 +30,7 @@ from timing_settings import load_global_timing_settings, save_global_timing_sett
 from views.calibration_mode import CalibrationModeView
 from views.lidar_dashboard import DashboardView
 from views.lidar_dashboard_stepbystep import GlobalTimingSettingsDialog, StepByStepDashboard
+from theme import THEME
 
 
 class ScanImportThread(QThread):
@@ -56,6 +57,7 @@ class DashboardTestWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("LiDAR Processing Dashboard")
         self.resize(1680, 960)
+        self.setObjectName("dashboardMainWindow")
 
         self._leaflet_manager = LeafletServerManager()
         self._pipeline_thread: BackendPipelineThread | None = None
@@ -68,6 +70,7 @@ class DashboardTestWindow(QMainWindow):
         self.setup_demo_assets()
 
         self.stack = QStackedWidget()
+        self.stack.setObjectName("dashboardStack")
         self.setCentralWidget(self.stack)
         self._setup_mode_toolbar()
 
@@ -86,6 +89,7 @@ class DashboardTestWindow(QMainWindow):
 
     def _setup_mode_toolbar(self):
         toolbar = QToolBar("Modes", self)
+        toolbar.setObjectName("modeToolbar")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
@@ -100,6 +104,9 @@ class DashboardTestWindow(QMainWindow):
 
         timing = toolbar.addAction("Global Settings")
         timing.triggered.connect(self.open_global_timing_dialog)
+        toolbar.setStyleSheet(
+            f"QToolBar#modeToolbar {{ background-color: {THEME['pane']}; border-bottom: 1px solid {THEME['border']}; }}"
+        )
 
     def open_global_timing_dialog(self):
         settings = load_global_timing_settings()
