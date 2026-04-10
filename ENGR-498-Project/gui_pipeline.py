@@ -306,11 +306,16 @@ class BackendPipelineThread(QThread):
         ]
         if pose_cfg.get("enable_rviz"):
             command.append("--rviz")
+        blur_threshold = float(global_pose_recovery_cfg.get("blur_threshold", 100.0))
         if not global_pose_recovery_cfg.get("blur_filter_enabled", True):
             command.append("--disable-blur-filter")
             self.emit_log("[pose-recovery] blur filtering disabled by global settings.")
         else:
-            self.emit_log("[pose-recovery] blur filtering enabled by global settings.")
+            command.extend(["--blur-threshold", str(blur_threshold)])
+            self.emit_log(
+                "[pose-recovery] blur filtering enabled by global settings "
+                f"(threshold={blur_threshold:.1f})."
+            )
         if allow_missing_gps:
             command.append("--gps-optional")
             self.emit_log(

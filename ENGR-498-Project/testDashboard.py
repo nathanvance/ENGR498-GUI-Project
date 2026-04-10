@@ -30,6 +30,7 @@ from timing_settings import load_global_timing_settings, save_global_timing_sett
 from views.calibration_mode import CalibrationModeView
 from views.lidar_dashboard import DashboardView
 from views.lidar_dashboard_stepbystep import GlobalTimingSettingsDialog, StepByStepDashboard
+from views.timing_debug_viewer import open_timing_debug_viewer
 from theme import THEME
 
 
@@ -79,6 +80,7 @@ class DashboardTestWindow(QMainWindow):
         self.calibration_view = CalibrationModeView(default_output_root=CALIBRATION_OUTPUT_ROOT)
         self.filter_viewer = None
         self.semantic_viewer = None
+        self.timing_viewer = None
 
         self.stack.addWidget(self.auto_dashboard)   # index 0
         self.stack.addWidget(self.step_dashboard)   # index 1
@@ -116,6 +118,7 @@ class DashboardTestWindow(QMainWindow):
             save_global_timing_settings(settings)
             self.auto_dashboard.add_notification("Updated global timing, GPS, and Fusion defaults", "done")
             self.step_dashboard.add_notification("Updated global timing, GPS, and Fusion defaults", "done")
+            self.refresh_timing_viewer_if_showing(self._current_timing_viewer_scan_ref())
 
     def _connect_signals(self):
         self.auto_dashboard.switchToStepModeRequested.connect(lambda: self.switch_to(self.step_dashboard))
@@ -135,6 +138,10 @@ class DashboardTestWindow(QMainWindow):
         self.step_dashboard.openSlamPointCloudRequested.connect(self.open_pose_recovery_point_cloud)
         self.auto_dashboard.openImagesFolderRequested.connect(self.open_images_folder)
         self.step_dashboard.openImagesFolderRequested.connect(self.open_images_folder)
+        self.auto_dashboard.openTimingViewerRequested.connect(self.open_timing_viewer)
+        self.step_dashboard.openTimingViewerRequested.connect(self.open_timing_viewer)
+        self.auto_dashboard.refreshTimingViewerRequested.connect(self.refresh_timing_viewer_if_showing)
+        self.step_dashboard.refreshTimingViewerRequested.connect(self.refresh_timing_viewer_if_showing)
 
         self.auto_dashboard.openMapRequested.connect(self.open_map_for_scan)
         self.step_dashboard.openMapRequested.connect(self.open_map_for_scan)
@@ -674,6 +681,32 @@ class DashboardTestWindow(QMainWindow):
 
         self.auto_dashboard.add_notification(f"Opened images folder for {images_dir.name}", "info")
         self.step_dashboard.add_notification(f"Opened images folder for {images_dir.name}", "info")
+
+    def open_timing_viewer(self, scan_ref: str | Path):
+        viewer = open_timing_debug_viewer(self, scan_ref, existing_dialog=self.timing_viewer)
+        if viewer is None:
+            return
+        self.timing_viewer = viewer
+
+    def refresh_timing_viewer_if_showing(self, scan_ref: str | Path | None):
+        if self.timing_viewer is None or scan_ref is None or self.timing_viewer.scan_dir is None:
+            return
+        try:
+            current_scan = Path(self.timing_viewer.scan_dir).resolve()
+            requested_scan = Path(scan_ref).resolve()
+        except Exception:
+            return
+        if current_scan != requested_scan:
+            return
+        self.timing_viewer.load_scan(requested_scan)
+        if self.timing_viewer.isVisible():
+            self.timing_viewer.raise_()
+            self.timing_viewer.activateWindow()
+
+    def _current_timing_viewer_scan_ref(self) -> str | None:
+        if self.timing_viewer is None or self.timing_viewer.scan_dir is None:
+            return None
+        return str(self.timing_viewer.scan_dir)
 
 
 if __name__ == "__main__":

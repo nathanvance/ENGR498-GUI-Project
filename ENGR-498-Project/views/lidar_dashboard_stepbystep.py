@@ -456,7 +456,8 @@ class GlobalTimingSettingsDialog(QDialog):
             "These defaults apply to every scan unless that scan sets explicit timing overrides. "
             "Timing values are shown in milliseconds but stored in seconds. "
             "The GPS developer-mode toggle lets you process bags without NavSatFix data from the GUI, "
-            "and the blur-filter toggle controls whether rosbag preprocessing removes blurry exported camera frames."
+            "and the pose-recovery blur settings control whether rosbag preprocessing removes blurry exported camera frames "
+            "and how strict that blur rejection should be."
         )
         description.setWordWrap(True)
         description.setStyleSheet(f"color: {THEME['muted']}; background-color: {THEME['pane_raised']}; padding: 8px; border-radius: 4px;")
@@ -500,6 +501,17 @@ class GlobalTimingSettingsDialog(QDialog):
         self.global_blur_filter_cb.setChecked(bool(current_pose_recovery.get("blur_filter_enabled", True)))
         form.addRow("Pose-Recovery Blur Filter:", self.global_blur_filter_cb)
 
+        self.global_blur_threshold = QDoubleSpinBox()
+        self.global_blur_threshold.setRange(0.0, 10000.0)
+        self.global_blur_threshold.setDecimals(1)
+        self.global_blur_threshold.setSingleStep(5.0)
+        self.global_blur_threshold.setSuffix(" score")
+        self.global_blur_threshold.setValue(float(current_pose_recovery.get("blur_threshold", 100.0)))
+        self.global_blur_threshold.setToolTip(
+            "Lower values keep more images. Higher values reject more blurry images."
+        )
+        form.addRow("Blur Threshold:", self.global_blur_threshold)
+
         layout.addLayout(form)
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
@@ -520,6 +532,7 @@ class GlobalTimingSettingsDialog(QDialog):
             },
             "pose_recovery": {
                 "blur_filter_enabled": bool(self.global_blur_filter_cb.isChecked()),
+                "blur_threshold": float(self.global_blur_threshold.value()),
             },
         }
 
@@ -615,6 +628,8 @@ class StepByStepDashboard(QWidget):
     openFilterViewerRequested = Signal(str)  # Open the point cloud filter viewer
     openSlamPointCloudRequested = Signal(str)  # point_cloud_path
     openImagesFolderRequested = Signal(str)  # images_dir_path
+    openTimingViewerRequested = Signal(str)  # scan_path
+    refreshTimingViewerRequested = Signal(str)  # scan_path
     
     STEP_COLUMNS = {
         "Rosbag Preprocessing": "slam",
@@ -849,6 +864,14 @@ class StepByStepDashboard(QWidget):
         btn_timing.clicked.connect(self._open_global_timing_dialog)
         layout.addWidget(btn_timing)
 
+        btn_timing_viewer = QPushButton("Timing Viewer")
+        btn_timing_viewer.setToolTip(
+            "Open a 3D timing/offset viewer for the currently selected scan using pose-recovery outputs only."
+        )
+        btn_timing_viewer.setStyleSheet(button_style("#334155", "#475569"))
+        btn_timing_viewer.clicked.connect(self._open_timing_viewer)
+        layout.addWidget(btn_timing_viewer)
+
         layout.addStretch()
         
         # Switch to Auto Mode button
@@ -875,6 +898,14 @@ class StepByStepDashboard(QWidget):
             save_global_timing_settings(settings)
             self.add_notification("Updated global timing, GPS, and Fusion defaults", "done")
             self.status_label.setText("Updated global timing, GPS, and Fusion defaults.")
+            if self.selected_scan:
+                self.refreshTimingViewerRequested.emit(str(self.assets_path / self.selected_scan))
+
+    def _open_timing_viewer(self):
+        if not self.selected_scan:
+            QMessageBox.information(self, "Timing Viewer", "Select a scan first.")
+            return
+        self.openTimingViewerRequested.emit(str(self.assets_path / self.selected_scan))
 
     def _create_log_panel(self) -> QTextEdit:
         log_output = QTextEdit()
@@ -1349,6 +1380,7 @@ class StepByStepDashboard(QWidget):
                     status_message=f"Saved Fusion calibration, GPS, and timing settings for {scan_name}.",
                 )
                 self.add_notification(f"Saved Fusion calibration/GPS settings for {scan_name}", "done")
+                self.refreshTimingViewerRequested.emit(str(scan_dir))
         elif step_key == "slam":
             StepInfoDialog(
                 "Rosbag Preprocessing Outputs",

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
     QFrame, QScrollArea, QMenu, QFileDialog, QMessageBox,
-    QToolButton, QSizePolicy, QTextEdit, QCheckBox
+    QToolButton, QSizePolicy, QTextEdit, QCheckBox, QDialog
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon
@@ -155,6 +155,8 @@ class DashboardView(QWidget):
     runPipelineRequested = Signal(str)  # scan_path
     openSlamPointCloudRequested = Signal(str)  # point_cloud_path
     openImagesFolderRequested = Signal(str)  # images_dir_path
+    openTimingViewerRequested = Signal(str)  # scan_path
+    refreshTimingViewerRequested = Signal(str)  # scan_path
     createScanRequested = Signal()
     switchToStepModeRequested = Signal()  # NEW: Switch to step-by-step mode
     
@@ -343,6 +345,14 @@ class DashboardView(QWidget):
         btn_global_settings.setStyleSheet(button_style("#0f766e", "#14b8a6"))
         btn_global_settings.clicked.connect(self._open_global_settings_dialog)
         layout.addWidget(btn_global_settings)
+
+        btn_timing_viewer = QPushButton("Timing Viewer")
+        btn_timing_viewer.setToolTip(
+            "Open a 3D timing/offset viewer for the currently selected scan using pose-recovery outputs only."
+        )
+        btn_timing_viewer.setStyleSheet(button_style("#334155", "#475569"))
+        btn_timing_viewer.clicked.connect(self._open_timing_viewer)
+        layout.addWidget(btn_timing_viewer)
         
         layout.addStretch()
         
@@ -409,6 +419,12 @@ class DashboardView(QWidget):
         table.itemSelectionChanged.connect(self._on_selection_changed)
         
         return table
+
+    def _open_timing_viewer(self):
+        if not self.selected_scan:
+            QMessageBox.information(self, "Timing Viewer", "Select a scan first.")
+            return
+        self.openTimingViewerRequested.emit(str(self.assets_path / self.selected_scan))
 
     def _create_log_panel(self) -> QTextEdit:
         log_output = QTextEdit()
@@ -694,6 +710,8 @@ class DashboardView(QWidget):
             save_global_timing_settings(settings)
             self.add_notification("Updated global timing, GPS, and Fusion defaults", "done")
             self.status_label.setText("Updated global timing, GPS, and Fusion defaults.")
+            if self.selected_scan:
+                self.refreshTimingViewerRequested.emit(str(self.assets_path / self.selected_scan))
     
     def _delete_scan(self, scan_name):
         """Delete a scan after confirmation"""
