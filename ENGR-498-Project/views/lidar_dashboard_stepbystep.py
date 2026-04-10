@@ -321,7 +321,8 @@ class FusionParametersDialog(QDialog):
 
         help_text = QLabel(
             "Fusion consumes outputs from two earlier modes: calibration mode provides camera intrinsics and the LiDAR-camera extrinsic transform, "
-            "and rosbag preprocessing provides the SLAM cloud, JPGs, and TF CSVs. This dialog should only link the completed calibration run and GPS lever-arm settings."
+            "and rosbag preprocessing provides the SLAM cloud, JPGs, and TF CSVs. This dialog links the completed calibration run, GPS lever-arm settings, "
+            "and the developer-mode GPS override for bags that do not contain NavSatFix data."
         )
         help_text.setWordWrap(True)
         help_text.setStyleSheet("color: #4b5563; background-color: #eef8ef; padding: 8px; border-radius: 4px;")
@@ -343,6 +344,10 @@ class FusionParametersDialog(QDialog):
         self.gps_offset_edit = QLineEdit(str(gps_config.get("offset_body_xyz_m", "0,0,0")))
         form.addRow("GPS->LiDAR Offset (x,y,z m):", self.gps_offset_edit)
 
+        self.allow_missing_gps_cb = QCheckBox("Developer mode: allow missing GPS and skip georeferencing")
+        self.allow_missing_gps_cb.setChecked(bool(gps_config.get("allow_missing", False)))
+        layout.addWidget(self.allow_missing_gps_cb)
+
         timing_title = QLabel("Timing Calibration Overrides (per scan)")
         timing_title.setStyleSheet("font-weight: bold; color: #1f3a5f; margin-top: 6px;")
         layout.addWidget(timing_title)
@@ -363,7 +368,8 @@ class FusionParametersDialog(QDialog):
 
         effective_label = QLabel(
             "A zero fusion offset uses the existing nearest-pose camera CSV matching. "
-            "A non-zero offset shifts frame timestamps and uses interpolated pose lookup."
+            "A non-zero offset shifts frame timestamps and uses interpolated pose lookup. "
+            "GPS georeferencing remains strict by default; enable developer mode above only for bags that truly have no GPS."
         )
         effective_label.setWordWrap(True)
         effective_label.setStyleSheet("color: #4b5563; background-color: #eef4ff; padding: 8px; border-radius: 4px;")
@@ -386,6 +392,7 @@ class FusionParametersDialog(QDialog):
         }
         gps_config = {
             "offset_body_xyz_m": self.gps_offset_edit.text().strip() or "0,0,0",
+            "allow_missing": bool(self.allow_missing_gps_cb.isChecked()),
         }
         timing_overrides = {}
         if self.override_fusion_cb.isChecked():
@@ -394,29 +401,33 @@ class FusionParametersDialog(QDialog):
 
 
 class GlobalTimingSettingsDialog(QDialog):
-    def __init__(self, current_timing=None, parent=None):
+    def __init__(self, current_settings=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Global Timing Calibration")
+        self.setWindowTitle("Global Settings")
         self.setMinimumWidth(560)
-        self._setup_ui(current_timing or {})
+        self._setup_ui(current_settings or {})
 
-    def _setup_ui(self, current_timing):
+    def _setup_ui(self, current_settings):
         layout = QVBoxLayout()
         self.setLayout(layout)
 
-        title = QLabel("Global Timing Calibration Defaults")
+        title = QLabel("Global Timing, GPS, And Fusion Defaults")
         title.setStyleSheet("font-size: 16px; font-weight: bold; color: #1f3a5f; margin-bottom: 10px;")
         layout.addWidget(title)
 
         description = QLabel(
             "These defaults apply to every scan unless that scan sets explicit timing overrides. "
-            "Values are shown in milliseconds but stored in seconds."
+            "Timing values are shown in milliseconds but stored in seconds. "
+            "The GPS developer-mode toggle lets you process bags without NavSatFix data from the GUI."
         )
         description.setWordWrap(True)
         description.setStyleSheet("color: #4b5563; background-color: #eef8ef; padding: 8px; border-radius: 4px;")
         layout.addWidget(description)
 
         form = QFormLayout()
+        current_timing = current_settings.get("timing", {})
+        current_fusion = current_settings.get("fusion", {})
+        current_gps = current_settings.get("gps", {})
 
         self.fusion_offset_ms = QDoubleSpinBox()
         self.fusion_offset_ms.setRange(-5000.0, 5000.0)
@@ -426,15 +437,33 @@ class GlobalTimingSettingsDialog(QDialog):
         self.fusion_offset_ms.setValue(float(current_timing.get("fusion_time_offset_sec", 0.0)) * 1000.0)
         form.addRow("Default Fusion Time Offset:", self.fusion_offset_ms)
 
+        self.fusion_visualize_cb = QCheckBox("Enable live Open3D visualization during Fusion")
+        self.fusion_visualize_cb.setChecked(bool(current_fusion.get("visualize", False)))
+        form.addRow("Fusion Visualization:", self.fusion_visualize_cb)
+
+        self.global_allow_missing_gps_cb = QCheckBox(
+            "Developer mode: allow missing GPS and skip georeferencing for all scans"
+        )
+        self.global_allow_missing_gps_cb.setChecked(bool(current_gps.get("allow_missing", False)))
+        form.addRow("GPS Developer Mode:", self.global_allow_missing_gps_cb)
+
         layout.addLayout(form)
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
 
-    def get_timing_settings(self):
+    def get_settings(self):
         return {
-            "fusion_time_offset_sec": float(self.fusion_offset_ms.value()) / 1000.0,
+            "timing": {
+                "fusion_time_offset_sec": float(self.fusion_offset_ms.value()) / 1000.0,
+            },
+            "fusion": {
+                "visualize": bool(self.fusion_visualize_cb.isChecked()),
+            },
+            "gps": {
+                "allow_missing": bool(self.global_allow_missing_gps_cb.isChecked()),
+            },
         }
 
 
@@ -566,8 +595,8 @@ class StepByStepDashboard(QWidget):
     STEP_DETAILS = {
         "slam": {
             "title": "Rosbag Preprocessing",
-            "summary": "Replays the rosbag in Docker, runs FAST-LIO SLAM, copies the raw map into processed/point_clouds as PCD plus LAS, exports JPG frames from /image/compressed, and samples both tf_camera_out.csv and tf_gps_out.csv using message timestamps.",
-            "run_tooltip": "Run the full rosbag preprocessing stage: FAST-LIO SLAM, JPG export, image timestamp CSV export, and camera/GPS TF sampling.",
+            "summary": "Replays the rosbag in Docker, runs FAST-LIO SLAM, copies the raw map into processed/point_clouds as PCD plus LAS, exports JPG frames from /image/compressed, and samples tf_camera_out.csv plus the dense trajectory. tf_gps_out.csv is still produced, but it may be empty only in developer mode for no-GPS bags.",
+            "run_tooltip": "Run the full rosbag preprocessing stage: FAST-LIO SLAM, JPG export, image timestamp CSV export, dense /tf sampling, and GPS TF sampling when available.",
             "view_tooltip": "Open the latest SLAM point cloud from rosbag preprocessing in the Open3D viewer.",
             "modify_label": "Details",
             "modify_tooltip": "Show exactly what rosbag preprocessing does and which files it produces.",
@@ -606,7 +635,7 @@ class StepByStepDashboard(QWidget):
         },
         "fusion": {
             "title": "Fusion + GPS",
-            "summary": "Projects segmentation masks into the SLAM point cloud, applies dense-cluster cleanup and instance clustering, measures pole spacing, and georeferences the outputs when tf_gps_out.csv exists. This stage consumes calibration outputs produced by direct visual LiDAR calibration, including camera intrinsics derived from /camera/camera_info.",
+            "summary": "Projects segmentation masks into the SLAM point cloud, applies dense-cluster cleanup and instance clustering, measures pole spacing, and georeferences the outputs when usable GPS samples exist. Developer mode can skip georeferencing for no-GPS bags.",
             "run_tooltip": "Run camera-LiDAR fusion and the GPS georeferencing/export stage for this scan.",
             "view_tooltip": "Open the semantic viewer with fused objects and wire overlays.",
             "modify_label": "Calibration",
@@ -628,7 +657,7 @@ class StepByStepDashboard(QWidget):
         self.assets_path = Path(assets_path)
         self.selected_scan = None
         self.scans_data = {}
-        self.modified_scans = set()  # Track which scans have unsaved changes
+        self._scan_snapshot = ()
         
         self._setup_ui()
         self._setup_refresh_timer()
@@ -812,8 +841,10 @@ class StepByStepDashboard(QWidget):
         self.btn_run_pipeline.clicked.connect(self._run_full_pipeline)
         layout.addWidget(self.btn_run_pipeline)
 
-        btn_timing = QPushButton("Timing Calibration")
-        btn_timing.setToolTip("Set global camera/LiDAR timing defaults used by preprocessing and Fusion.")
+        btn_timing = QPushButton("Global Settings")
+        btn_timing.setToolTip(
+            "Set global timing defaults, the GPS developer-mode override, and the Fusion visualization default."
+        )
         btn_timing.setStyleSheet("""
             QPushButton {
                 background-color: #0F766E;
@@ -868,20 +899,19 @@ class StepByStepDashboard(QWidget):
                 background-color: #e0e0e0;
             }
         """)
-        btn_refresh.clicked.connect(self.refresh_scans)
+        btn_refresh.clicked.connect(lambda: self.refresh_scans(force=True))
         layout.addWidget(btn_refresh)
         
         return bar
 
     def _open_global_timing_dialog(self):
         settings = load_global_timing_settings()
-        current_timing = settings.get("timing", {})
-        dialog = GlobalTimingSettingsDialog(current_timing=current_timing, parent=self)
+        dialog = GlobalTimingSettingsDialog(current_settings=settings, parent=self)
         if dialog.exec() == QDialog.Accepted:
-            settings["timing"] = dialog.get_timing_settings()
+            settings.update(dialog.get_settings())
             save_global_timing_settings(settings)
-            self.add_notification("Updated global timing calibration defaults", "done")
-            self.status_label.setText("Updated global timing calibration defaults.")
+            self.add_notification("Updated global timing, GPS, and Fusion defaults", "done")
+            self.status_label.setText("Updated global timing, GPS, and Fusion defaults.")
 
     def _create_log_panel(self) -> QTextEdit:
         log_output = QTextEdit()
@@ -948,7 +978,7 @@ class StepByStepDashboard(QWidget):
                 step_key = self.STEP_COLUMNS[header_text]
                 item.setToolTip(self.STEP_DETAILS[step_key]["summary"])
             elif header_text == "Actions":
-                item.setToolTip("Open the semantic/map views, run the full chain, open the latest SLAM point cloud, open exported images, save metadata edits, or delete the scan.")
+                item.setToolTip("Open the semantic/map views, run the full chain, open the latest SLAM point cloud, open exported images, or delete the scan.")
             else:
                 item.setToolTip("The scan directory under assets/ containing raw bags, processed outputs, and metadata.")
         
@@ -980,14 +1010,41 @@ class StepByStepDashboard(QWidget):
         self.refresh_timer = QTimer()
         self.refresh_timer.timeout.connect(self.refresh_scans)
         self.refresh_timer.start(3000)
-    
-    def refresh_scans(self):
+
+    def _collect_scan_snapshot(self) -> tuple[tuple[str, int, int], ...]:
+        snapshot = []
+        if not self.assets_path.exists():
+            return tuple()
+
+        for scan_dir in sorted(self.assets_path.iterdir(), key=lambda path: path.name):
+            metadata_path = scan_dir / "metadata.json"
+            if not scan_dir.is_dir() or not metadata_path.is_file():
+                continue
+            stat = metadata_path.stat()
+            snapshot.append((scan_dir.name, stat.st_mtime_ns, stat.st_size))
+        return tuple(snapshot)
+
+    def _persist_scan_metadata(self, scan_name: str, metadata: dict, *, status_message: str | None = None) -> None:
+        scan_dir = self.assets_path / scan_name
+        save_scan_metadata(scan_dir, metadata)
+        _, reloaded = load_scan_metadata(scan_dir)
+        self.scans_data[scan_name] = reloaded
+        self._scan_snapshot = self._collect_scan_snapshot()
+        if status_message:
+            self.status_label.setText(status_message)
+
+    def refresh_scans(self, force: bool = False):
         """Refresh scan data"""
         if not self.assets_path.exists():
             self.assets_path.mkdir(parents=True, exist_ok=True)
             print(f"Created assets directory at {self.assets_path.resolve()}")
             return
 
+        snapshot = self._collect_scan_snapshot()
+        if not force and snapshot == self._scan_snapshot:
+            return
+
+        self._scan_snapshot = snapshot
         selected_scan = self.selected_scan
         self.scans_data = {}
         
@@ -1062,7 +1119,9 @@ class StepByStepDashboard(QWidget):
             "QCheckBox::indicator:checked { background: #673AB7; border: 2px solid #673AB7; }"
         )
         checkbox.setChecked(status_dict.get(step_key) == "done")
-        checkbox.setToolTip(f"Mark {step_info['title']} complete in metadata. This does not run the stage by itself.")
+        checkbox.setToolTip(
+            f"Mark {step_info['title']} complete in metadata. This saves immediately and does not run the stage by itself."
+        )
         checkbox.stateChanged.connect(lambda state, sn=scan_name, sk=step_key: self._on_checkbox_changed(sn, sk, state))
         layout.addWidget(checkbox)
 
@@ -1284,27 +1343,6 @@ class StepByStepDashboard(QWidget):
             btn_images.clicked.connect(lambda checked=False, fp=str(images_dir): self.openImagesFolderRequested.emit(fp))
         layout.addWidget(btn_images)
         
-        # Save button (only visible if modified)
-        btn_save = QPushButton("💾 Save")
-        btn_save.setStyleSheet("""
-            QPushButton {
-                background-color: #9C27B0;
-                color: white;
-                border: none;
-                padding: 6px 12px;
-                border-radius: 4px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #7B1FA2;
-            }
-        """)
-        btn_save.clicked.connect(lambda: self._save_scan(scan_name))
-        btn_save.setVisible(scan_name in self.modified_scans)
-        btn_save.setObjectName(f"save_{scan_name}")  # For finding later
-        layout.addWidget(btn_save)
-        
         # Delete button
         btn_delete = QPushButton("🗑")
         btn_delete.setToolTip("Delete scan")
@@ -1329,45 +1367,18 @@ class StepByStepDashboard(QWidget):
         """Handle checkbox state change"""
         is_checked = self._is_checked_state(state)
         new_status = "done" if is_checked else "pending"
-        
-        # Update in-memory data
-        if scan_name in self.scans_data:
-            if "status" not in self.scans_data[scan_name]:
-                self.scans_data[scan_name]["status"] = {}
-            self.scans_data[scan_name]["status"][step_key] = new_status
-            
-            # Mark as modified
-            self.modified_scans.add(scan_name)
-            
-            # Show save button
-            self._show_save_button(scan_name)
-            
-            print(f"Changed {scan_name} -> {step_key}: {new_status}")
-    
-    def _show_save_button(self, scan_name):
-        """Show the save button for a scan"""
-        # Find and show the save button
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item and item.data(Qt.UserRole) == scan_name:
-                actions_widget = self.table.cellWidget(row, len(self.STEP_COLUMNS) + 1)
-                if actions_widget:
-                    save_btn = actions_widget.findChild(QPushButton, f"save_{scan_name}")
-                    if save_btn:
-                        save_btn.setVisible(True)
-                break
-    
-    def _save_scan(self, scan_name):
-        """Save scan metadata"""
         if scan_name not in self.scans_data:
             return
 
         try:
-            save_scan_metadata(self.assets_path / scan_name, self.scans_data[scan_name])
-            self.modified_scans.discard(scan_name)
-            self.add_notification(f"Saved changes for {scan_name}", "done")
-            self.refresh_scans()
-            print(f"✓ Saved metadata for {scan_name}")
+            scan_dir, metadata = load_scan_metadata(self.assets_path / scan_name)
+            metadata.setdefault("status", {})[step_key] = new_status
+            self._persist_scan_metadata(
+                scan_name,
+                metadata,
+                status_message=f"Saved {self.STEP_DETAILS[step_key]['title']} status for {scan_name}: {new_status}.",
+            )
+            print(f"Saved {scan_name} -> {step_key}: {new_status}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save: {e}")
     
@@ -1437,13 +1448,13 @@ class StepByStepDashboard(QWidget):
                 print(f"  linearity (Linearity Threshold): {params['linearity']}")
                 print(f"  sag_method: {params['sag_method']}")
                 
-                # Update metadata
-                if scan_name in self.scans_data:
-                    self.scans_data[scan_name]["wire_params"] = params
-                    self.modified_scans.add(scan_name)
-                    self._show_save_button(scan_name)
-                
-                self.add_notification(f"Modified wire parameters for {scan_name}", "info")
+                metadata["wire_params"] = params
+                self._persist_scan_metadata(
+                    scan_name,
+                    metadata,
+                    status_message=f"Saved wire extraction parameters for {scan_name}.",
+                )
+                self.add_notification(f"Saved wire parameters for {scan_name}", "done")
         elif step_key == "filtering":
             print(f"OPEN FILTER clicked: {scan_name} -> {step_key}")
             if scan_name in self.scans_data:
@@ -1466,9 +1477,12 @@ class StepByStepDashboard(QWidget):
             dialog = InferenceParametersDialog(current_config=current_config, scan_dir=scan_dir, parent=self)
             if dialog.exec() == QDialog.Accepted:
                 metadata.setdefault("config", {})["inference"] = dialog.get_config()
-                self.modified_scans.add(scan_name)
-                self._show_save_button(scan_name)
-                self.add_notification(f"Updated inference runtime settings for {scan_name}", "info")
+                self._persist_scan_metadata(
+                    scan_name,
+                    metadata,
+                    status_message=f"Saved inference runtime settings for {scan_name}.",
+                )
+                self.add_notification(f"Saved inference runtime settings for {scan_name}", "done")
         elif step_key == "fusion":
             current_config = metadata.get("config", {})
             effective_timing = resolve_effective_timing(metadata)
@@ -1485,9 +1499,12 @@ class StepByStepDashboard(QWidget):
                 metadata.setdefault("config", {})["fusion"] = fusion_config
                 metadata.setdefault("config", {})["gps"] = gps_config
                 metadata.setdefault("config", {})["timing_overrides"] = timing_overrides
-                self.modified_scans.add(scan_name)
-                self._show_save_button(scan_name)
-                self.add_notification(f"Updated calibration/GPS settings for {scan_name}", "info")
+                self._persist_scan_metadata(
+                    scan_name,
+                    metadata,
+                    status_message=f"Saved Fusion calibration, GPS, and timing settings for {scan_name}.",
+                )
+                self.add_notification(f"Saved Fusion calibration/GPS settings for {scan_name}", "done")
         elif step_key == "slam":
             StepInfoDialog(
                 "Rosbag Preprocessing Outputs",
@@ -1496,7 +1513,8 @@ class StepByStepDashboard(QWidget):
                     "- Replays the rosbag inside the Docker preprocessing environment.\n"
                     "- Runs FAST-LIO SLAM to produce the local map point cloud.\n"
                     "- Saves every `/image/compressed` frame as a JPG under the pose-recovery run folder.\n"
-                    "- Writes `image_timestamps.csv`, `tf_camera_out.csv`, and `tf_gps_out.csv`.\n\n"
+                    "- Writes `image_timestamps.csv`, `tf_camera_out.csv`, `tf_dense_trajectory.csv`, and `tf_gps_out.csv`.\n"
+                    "- In developer mode for no-GPS bags, `tf_gps_out.csv` may be header-only while the other outputs are still produced.\n\n"
                     "### What this stage does not do\n"
                     "- It does not compute camera intrinsics or LiDAR-camera extrinsics.\n"
                     "- Those come from the separate Calibration Mode, where intrinsics are extracted from `/camera/camera_info` and direct visual LiDAR calibration solves the extrinsic transform.\n\n"
@@ -1507,6 +1525,7 @@ class StepByStepDashboard(QWidget):
                     "- `processed/pose_recovery/<run>/images/*.jpg`\n"
                     "- `processed/pose_recovery/<run>/image_timestamps.csv`\n"
                     "- `processed/pose_recovery/<run>/tf_camera_out.csv`\n"
+                    "- `processed/pose_recovery/<run>/tf_dense_trajectory.csv`\n"
                     "- `processed/pose_recovery/<run>/tf_gps_out.csv`\n\n"
                     "### Optional live viewer\n"
                     "- Use the **Show RViz** checkbox directly in this Rosbag Preprocessing cell if you want RViz to open while FAST-LIO builds the map in real time.\n\n"
@@ -1546,8 +1565,7 @@ class StepByStepDashboard(QWidget):
                 import shutil
                 shutil.rmtree(self.assets_path / scan_name)
                 del self.scans_data[scan_name]
-                self.modified_scans.discard(scan_name)
-                self.refresh_scans()
+                self.refresh_scans(force=True)
                 self.add_notification(f"Deleted {scan_name}", "info")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to delete: {e}")
@@ -1568,12 +1586,13 @@ class StepByStepDashboard(QWidget):
         scan_dir, metadata = load_scan_metadata(self.assets_path / scan_name)
         is_checked = self._is_checked_state(state)
         metadata.setdefault("config", {}).setdefault("pose_recovery", {})["enable_rviz"] = is_checked
-        save_scan_metadata(scan_dir, metadata)
-        self.scans_data[scan_name] = metadata
         state_text = "enabled" if is_checked else "disabled"
+        self._persist_scan_metadata(
+            scan_name,
+            metadata,
+            status_message=f"Rosbag Preprocessing RViz preview {state_text} for {scan_name}",
+        )
         self.add_notification(f"RViz preview {state_text} for {scan_name}", "info")
-        self.status_label.setText(f"Rosbag Preprocessing RViz preview {state_text} for {scan_name}")
-        self.refresh_scans()
     
     def _show_notifications(self):
         """Show notification panel"""

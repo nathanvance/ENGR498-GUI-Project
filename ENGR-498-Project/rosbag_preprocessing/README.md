@@ -370,6 +370,11 @@ Schema: `timestamp_sec, x, y, z, qx, qy, qz, qw, status`.
 Used by the Fusion stage when `fusion_time_offset_enabled` is on, giving robust
 continuous-time interpolation instead of nearest-pose matching.
 
+`tf_gps_out.csv` is still written during pose recovery. In the normal strict mode it
+is expected to contain GPS-backed rows. In the explicit GPS-optional developer mode
+for no-GPS bags, the file may be header-only after sanitization while the image,
+camera-pose, dense-trajectory, and SLAM outputs are still produced.
+
 Typical calibration output:
 
 ```text

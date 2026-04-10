@@ -1,5 +1,11 @@
 {
   "timing": {
-    "fusion_time_offset_sec": -0.01
+    "fusion_time_offset_sec": 0.15
+  },
+  "fusion": {
+    "visualize": true
+  },
+  "gps": {
+    "allow_missing": true
   }
 }

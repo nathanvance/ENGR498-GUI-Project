@@ -225,6 +225,8 @@ def wait_for_topics(
     image_topic: Optional[str],
     gps_topic: Optional[str],
     timeout_sec: float,
+    require_image: bool,
+    require_gps: bool,
 ) -> Tuple[Optional[Tuple[str, str]], Optional[Tuple[str, str]]]:
     image_override = image_topic if image_topic and image_topic.lower() != "auto" else None
     gps_override = gps_topic if gps_topic and gps_topic.lower() != "auto" else None
@@ -252,7 +254,9 @@ def wait_for_topics(
             rospy.loginfo(summary)
             last_summary = summary
 
-        if image_info is not None and gps_info is not None:
+        image_ready = image_info is not None or not require_image
+        gps_ready = gps_info is not None or not require_gps
+        if image_ready and gps_ready:
             return image_info, gps_info
 
         time.sleep(0.1)
@@ -719,6 +723,7 @@ def main() -> int:
     ap.add_argument("--stall-wall-sec", type=float, default=2.0)
     ap.add_argument("--event-queue-size", type=int, default=2048)
     ap.add_argument("--camera-time-offset-sec", type=float, default=0.0)
+    ap.add_argument("--gps-optional", action="store_true")
     ap.add_argument("--dense-traj-out-csv", default="")
     ap.add_argument("--dense-traj-interval-sec", type=float, default=0.010)
     args = ap.parse_args()
@@ -747,21 +752,37 @@ def main() -> int:
         image_topic=args.image_topic,
         gps_topic=args.gps_topic,
         timeout_sec=args.discovery_timeout_wall_sec,
+        require_image=True,
+        require_gps=not args.gps_optional,
     )
 
     if image_info is None:
-        rospy.logwarn("No image topic detected; tf_camera_out.csv will contain only the header unless one appears later.")
+        rospy.logerr("No image topic detected; image export and tf_camera_out.csv require a valid image stream.")
     else:
         rospy.loginfo(f"Using image topic: {image_info[0]} ({image_info[1]})")
 
     if gps_info is None:
-        rospy.logwarn("No NavSatFix topic detected; tf_gps_out.csv will contain only the header unless one appears later.")
+        if args.gps_optional:
+            rospy.logwarn(
+                "GPS-optional developer mode enabled; no NavSatFix topic detected. "
+                "tf_gps_out.csv will contain only the header and georeferencing may be skipped."
+            )
+        else:
+            rospy.logerr(
+                "No NavSatFix topic detected. Re-run with --gps-optional to allow preprocessing without GPS."
+            )
     else:
         rospy.loginfo(f"Using GPS topic: {gps_info[0]} ({gps_info[1]})")
 
-    if image_info is None and gps_info is None:
-        print("No image or GPS topics could be detected.", file=sys.stderr)
+    if image_info is None:
+        print("No image topic could be detected.", file=sys.stderr)
         return 5
+    if gps_info is None and not args.gps_optional:
+        print(
+            "No NavSatFix topic could be detected. Re-run with --gps-optional to allow preprocessing without GPS.",
+            file=sys.stderr,
+        )
+        return 6
 
     dense_sampler: Optional[DenseTrajectorySampler] = None
     if args.dense_traj_out_csv:

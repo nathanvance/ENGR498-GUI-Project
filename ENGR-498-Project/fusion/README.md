@@ -53,6 +53,13 @@ Example workflow:
 3. Run `georeference_from_tf_gps.py`
 4. Open the Leaflet viewer with the generated JSON outputs
 
+Fusion itself stays GPS-independent. GPS only matters for the optional
+georeferencing/export step after object fusion. The GUI now exposes an explicit
+per-scan developer mode for no-GPS bags; when enabled, Fusion still runs in local
+coordinates and georeferencing is skipped if there are not enough usable GPS rows.
+The GUI also has a global Fusion visualization default that controls whether
+`fuse_masks_to_slam.py` launches its live Open3D viewer.
+
 ## Dense Trajectory and Time-Offset Interpolation
 
 `fuse_masks_to_slam.py` now has two distinct pose-lookup paths for time-offset mode:

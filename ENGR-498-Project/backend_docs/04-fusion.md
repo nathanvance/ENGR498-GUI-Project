@@ -89,6 +89,9 @@ flowchart TD
 `fuse_masks_to_slam.py` has three distinct pose-lookup paths depending on whether
 time-offset mode is enabled and whether a dense trajectory file is available.
 
+Fusion object generation itself does not require GPS. GPS only matters for the
+later georeferencing/export step that writes world-coordinate outputs.
+
 ### Path 1: No time offset (default)
 
 When `--time-offset-enabled` is **not** passed:
@@ -244,6 +247,9 @@ measure pole spacing.
 - `tf_dense_trajectory.csv` must be sanitized before use (the preprocessing
   shell script calls `sanitize_pose_recovery_outputs.py` automatically). If you
   produce the file manually, run the sanitizer before passing it to Fusion.
+- GPS georeferencing requires at least 3 usable `tf_gps_out.csv` rows after
+  filtering. In the explicit developer mode for no-GPS bags, the GUI skips
+  georeferencing and leaves the local-coordinate Fusion outputs in place.
 
 ## Where To Change Behavior
 

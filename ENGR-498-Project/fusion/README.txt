@@ -13,8 +13,10 @@ The script:
 1. Loads a map/SLAM point cloud.
 2. Loads camera intrinsics from JSON.
 3. Loads LiDAR-to-camera extrinsics from JSON.
-4. Loads LiDAR poses from a CSV file.
-5. Matches image timestamps to poses.
+4. Loads LiDAR poses from a CSV file (sparse event-driven) and optionally a
+   dense trajectory CSV (10 ms uniform samples) for time-offset mode.
+5. Matches image timestamps to poses (nearest-pose for no-offset mode;
+   dense trajectory SLERP/lerp for time-offset mode when dense CSV is present).
 6. Projects map points into each image.
 7. Applies YOLO masks to label 3D points.
 8. Keeps dense projected clusters.
@@ -83,7 +85,10 @@ mask lookup. Visual Studio Build Tools must be installed.
 Files in This Folder
 --------------------
 - fuse_masks_to_slam.py
-  Main fusion pipeline.
+  Main fusion pipeline. Now contains the DenseTrajectory dataclass,
+  load_dense_trajectory(), query_dense_trajectory(), and
+  _enforce_quaternion_sign_continuity() in addition to the original
+  load_pose_records(), match_nearest_pose_indices(), and interpolate_pose_record().
 
 - run_yolo_inference.py
   Runs local YOLO segmentation directly on the JPG output produced by
@@ -105,9 +110,17 @@ Files in This Folder
 - calibration_test\
   Contains the current tested calibration and fusion outputs.
 
+- tests\test_dense_trajectory.py
+  Unit tests for the dense trajectory loading, sign continuity enforcement,
+  SLERP correctness, query boundary conditions, and load→query round-trips.
+  Run with: python -m pytest fusion\tests\test_dense_trajectory.py -v
+
 - sample_intrinsics.json
 - sample_extrinsics.json
 - sample_pose.csv
+  Sparse event-driven pose CSV schema reference (tf_camera_out.csv format).
+- sample_dense_trajectory.csv
+  Dense trajectory CSV schema reference (tf_dense_trajectory.csv format).
 - sample_image_timestamps.csv
   Small example inputs used during development.
 
@@ -122,12 +135,14 @@ container project folder:
 Typical files from that stage are:
 - image_timestamps.csv
 - images\frame_000001.jpg
-- tf_camera_out.csv
-- tf_gps_out.csv
+- tf_camera_out.csv      (sparse, event-driven — used for no-offset mode)
+- tf_gps_out.csv         (GPS-event-driven — used for georeferencing only)
+- tf_dense_trajectory.csv  (10 ms uniform samples — used for time-offset mode)
 - pcd\scans.pcd
 
-The Fusion georeferencing step is designed to consume `tf_gps_out.csv` from
-that folder directly.
+The Fusion georeferencing step consumes `tf_gps_out.csv` from that folder.
+The Fusion time-offset path consumes `tf_dense_trajectory.csv` from that folder.
+The no-offset Fusion path consumes `tf_camera_out.csv` from that folder.
 
 
 Expected Inputs
@@ -154,10 +169,14 @@ Expected Inputs
    In the integrated GUI branch, this file is also derived automatically from
    the calibration run's `calib.json`.
 
-3. pose CSV
+3. pose CSV (--pose-csv)
+   Used for:
+   - no-offset mode: nearest-pose matching against this file
+   - time-offset mode without dense CSV: sparse interpolation against this file (fallback)
+
    The tested schema is:
    - t_in_sec
-   - t_query_sec
+   - t_query_sec  (used as the pose timestamp by default; set with --time-column)
    - x
    - y
    - z
@@ -167,7 +186,36 @@ Expected Inputs
    - qw
    - status
 
-4. image timestamp CSV
+   In the integrated GUI branch, this is always tf_camera_out.csv from the
+   pose-recovery run.
+
+4. dense trajectory CSV (--dense-traj-csv, optional)
+   Used for:
+   - time-offset mode when this file is present: dense SLERP/lerp interpolation
+
+   Schema:
+   - timestamp_sec   (absolute ROS time; this is the lookup time, not an event time)
+   - x
+   - y
+   - z
+   - qx
+   - qy
+   - qz
+   - qw
+   - status
+
+   Only rows with status == 'OK' and valid quaternion norm are used.
+   The loader sorts by timestamp_sec, deduplicates, normalizes quaternions to
+   unit length, and enforces sign continuity before returning a DenseTrajectory.
+
+   In the integrated GUI branch, this is always tf_dense_trajectory.csv from the
+   same pose-recovery run folder. The GUI passes it automatically when
+   fusion_time_offset_enabled is on.
+
+   If this file is absent, Fusion falls back to sparse interpolation with a warning.
+   See the "Dense LiDAR Trajectory" section below for details.
+
+5. image timestamp CSV
    Required columns:
    - filename
    - t_query_sec
@@ -178,11 +226,11 @@ Expected Inputs
    and stores the corresponding JPG frames in:
    - ..\rosbag_preprocessing\outputs\pose_recovery\<run_name>\images\
 
-5. point cloud
+6. point cloud
    Tested with:
    - .pcd
 
-6. YOLO outputs
+7. YOLO outputs
    - masks_npz directory with *_masks.npz
    - meta_json directory with *_meta.json
 
@@ -190,7 +238,7 @@ Expected Inputs
    - locally by `run_yolo_inference.py`
    - or in Colab by `colab\run_inference_colab.py`
 
-7. GPS / TF georeferencing CSV
+8. GPS / TF georeferencing CSV (--tf-gps-csv in georeference_from_tf_gps.py)
    Produced by the WSL event-driven sampler as:
    - tf_gps_out.csv
 
@@ -215,11 +263,34 @@ Expected Inputs
    - cov_zz_m2
    - covariance_type
 
+   NOTE: tf_gps_out.csv is NOT used by fuse_masks_to_slam.py. It is consumed
+   exclusively by georeference_from_tf_gps.py.
+
 
 Current Behavior
 ----------------
-- Uses nearest pose in time.
-- Uses t_query_sec by default for pose/image matching.
+There are now three pose-lookup paths depending on flags:
+
+No-offset mode (default, --time-offset-enabled not passed):
+- Uses nearest pose in time from --pose-csv (tf_camera_out.csv).
+- match_nearest_pose_indices() finds the closest sample per frame.
+- Dense trajectory is not loaded or used.
+
+Time-offset mode with dense trajectory (--time-offset-enabled + --dense-traj-csv):
+- Preferred path. Loads tf_dense_trajectory.csv.
+- Enforces quaternion sign continuity across the full trajectory up front.
+- For each frame: t_query = frame.timestamp + time_offset_sec
+- Binary-searches the dense timestamps for the bracketing pair.
+- Interpolates translation linearly and rotation with SLERP.
+- Frames outside the trajectory time range are dropped with a warning.
+
+Time-offset mode without dense trajectory (--time-offset-enabled, no --dense-traj-csv):
+- Fallback path. interpolate_pose_record() is called against --pose-csv.
+- A warning is printed that the dense trajectory is missing.
+- Behavior is identical to the old sparse-interpolation path.
+
+Common to all paths:
+- Uses t_query_sec by default for pose/image matching (--time-column).
 - Default minimum vote threshold is 1.
 - Keeps dense projected clusters.
 - Segments object instances after fusion.
@@ -390,9 +461,134 @@ Important files there:
 - ordered_image_timestamps_from_tf_out.csv
 
 
+Dense LiDAR Trajectory
+----------------------
+This section describes the new continuous-time pose interpolation system in detail.
+
+Background
+~~~~~~~~~~
+FAST-LIO publishes the LiDAR trajectory to the /tf topic at approximately 10 Hz
+(one update per LiDAR scan). During pose recovery the event-driven sampler records
+these poses only when a camera frame or GPS fix arrives. Camera events may arrive at
+10-30 Hz depending on the sensor configuration, so the sparse trajectory can have
+gaps of 0.1-1 second between consecutive samples.
+
+When the fusion time offset is enabled, each camera frame's effective timestamp is
+shifted by time_offset_sec before pose lookup. If that shifted time falls inside a
+large gap in the sparse trajectory, the interpolated pose is inaccurate. For example,
+a 0.5 s offset applied to a camera frame that sits 0.8 s before the next sampled pose
+will extrapolate over a region where the LiDAR moved substantially.
+
+The dense trajectory solves this by capturing tf2_ros.Buffer's own internal
+interpolation at 100 Hz (every 10 ms), producing a dense, uniform sample grid that
+spans the entire bag. Fusion then interpolates within that dense grid rather than
+over the sparse event grid.
+
+How the dense trajectory is produced
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+1. DenseTrajectorySampler starts in a background thread inside tf_sample_camera_gps.py.
+2. It waits for TFStampMonitor.first_ev before starting (same synchronization as the
+   event sampler).
+3. It samples tf2_ros.Buffer.lookup_transform(target='camera_init', source='body', ...)
+   at intervals of dense_traj_interval_sec (default 0.010 s = 10 ms).
+4. Each lookup runs slightly behind the live bag clock (lag = max(2*interval, 50 ms))
+   to guarantee the transform is already in the buffer and avoid ExtrapolationException.
+5. Successful lookups are written as OK rows. Failed lookups get a status code.
+6. The thread exits when TFStampMonitor.has_stalled() returns True.
+7. After the sampler finishes, sanitize_pose_recovery_outputs.py:
+   - drops non-OK rows
+   - drops rows with invalid quaternion norm (norm_sq outside [0.5, 2.0])
+   - sorts by timestamp_sec
+   - deduplicates (first occurrence wins per timestamp)
+   - rewrites the file in place
+
+How the dense trajectory is used in Fusion
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Triggered when: --time-offset-enabled is passed AND --dense-traj-csv points to a
+valid file.
+
+At load time (load_dense_trajectory):
+- Reads all OK rows with finite, valid-norm quaternions.
+- Sorts by timestamp_sec, deduplicates.
+- Normalizes quaternions to unit length.
+- Calls _enforce_quaternion_sign_continuity in-place:
+    for i in range(1, N):
+        if dot(q[i-1], q[i]) < 0:
+            q[i] = -q[i]
+  This ensures every consecutive pair is on the same quaternion hemisphere so SLERP
+  always follows the short arc. It is O(N) and runs once at load time.
+
+At query time (query_dense_trajectory):
+- Receives t_query = frame.timestamp + time_offset_sec.
+- Binary-searches traj.timestamps with np.searchsorted for the bracket
+  [T[left], T[right]] where T[left] <= t_query <= T[right].
+- Computes alpha = (t_query - T[left]) / (T[right] - T[left]), clamped to [0, 1].
+- Translation: lerp = (1 - alpha) * trans[left] + alpha * trans[right]
+- Rotation: slerp = _slerp_quaternion_xyzw(quat[left], quat[right], alpha)
+  The SLERP handles near-identical quaternions (dot > 0.9995) by falling back to
+  normalized linear interpolation (NLERP) to avoid numerical instability.
+- Returns a PoseRecord with the interpolated pose and a diagnostics dict.
+- Returns (None, {"drop_reason": "effective_time_out_of_range"}) if t_query is
+  outside [T[0], T[-1]]. The frame is then skipped by the Fusion main loop.
+
+Why local interpolation (not global splines)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+- Global splines (e.g., cubic B-spline on SO(3)) can overshoot between measurements
+  and are sensitive to sudden motion changes or noise in individual TF samples.
+- With 10 ms spacing and a smooth robot trajectory, local linear+SLERP between
+  consecutive samples is geometrically accurate and has no overshoot risk.
+- Local interpolation is also trivially debuggable: the bracket indices and alpha
+  are recorded in the diagnostics dict of every frame.
+
+Sign convention for time_offset_sec
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+t_query = frame.timestamp + time_offset_sec
+
+Positive time_offset_sec: shifts the pose lookup forward in time.
+Practical meaning: a positive offset compensates for a camera that is
+systematically delayed relative to the LiDAR (the image was captured after the
+LiDAR built its map at that location).
+
+This is the same sign convention used in the old sparse interpolation path so
+existing GUI time offset settings are directly transferable.
+
 Run Command
 -----------
-This is the current tested command:
+Standard no-offset mode (unchanged from before):
+
+  python .\fuse_masks_to_slam.py `
+    --intrinsics-json .\calibration_test\whiteout_detected_camera_intrinsics.json `
+    --extrinsics-json .\calibration_test\current_extrinsics.json `
+    --pose-csv <run_name>\tf_camera_out.csv `
+    --image-timestamps-csv <run_name>\image_timestamps.csv `
+    --point-cloud <run_name>\pcd\scans.pcd `
+    --mask-dir <run_name>\yolo_inference\masks_npz `
+    --meta-dir <run_name>\yolo_inference\meta_json `
+    --output-dir .\fusion_output `
+    --no-visualize
+
+Time-offset mode with dense trajectory (new preferred path):
+
+  python .\fuse_masks_to_slam.py `
+    --intrinsics-json .\calibration_test\whiteout_detected_camera_intrinsics.json `
+    --extrinsics-json .\calibration_test\current_extrinsics.json `
+    --pose-csv <run_name>\tf_camera_out.csv `
+    --image-timestamps-csv <run_name>\image_timestamps.csv `
+    --point-cloud <run_name>\pcd\scans.pcd `
+    --mask-dir <run_name>\yolo_inference\masks_npz `
+    --meta-dir <run_name>\yolo_inference\meta_json `
+    --output-dir .\fusion_output `
+    --time-offset-enabled `
+    --time-offset-sec 0.05 `
+    --dense-traj-csv <run_name>\tf_dense_trajectory.csv `
+    --no-visualize
+
+Replace <run_name> with the actual pose-recovery run directory, e.g.:
+  ..\rosbag_preprocessing\outputs\pose_recovery\mybag_20260101_120000_12345
+
+When called from the integrated GUI, these paths are resolved automatically.
+
+The legacy calibration_test command (still valid for development/testing):
 
   python .\fuse_masks_to_slam.py `
     --intrinsics-json .\calibration_test\whiteout_detected_camera_intrinsics.json `

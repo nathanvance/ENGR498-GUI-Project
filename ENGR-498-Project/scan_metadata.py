@@ -72,6 +72,7 @@ DEFAULT_CONFIG = {
     },
     "gps": {
         "offset_body_xyz_m": "0,0,0",
+        "allow_missing": False,
     },
     "timing_overrides": {},
 }

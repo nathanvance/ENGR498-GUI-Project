@@ -78,6 +78,9 @@ to distinguish it from the event-driven CSV files.
 | `cov_xx_m2`,`cov_yy_m2`,`cov_zz_m2` | float | Covariance diagonal |
 | `covariance_type` | int | Covariance interpretation enum |
 
+In the explicit GPS-optional developer mode for no-GPS bags, this file may
+contain only the header row after sanitization.
+
 ### `*_masks.npz`
 
 | Key | Type | Meaning |

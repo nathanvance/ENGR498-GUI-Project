@@ -59,6 +59,7 @@ class DashboardTestWindow(QMainWindow):
 
         self._leaflet_manager = LeafletServerManager()
         self._pipeline_thread: BackendPipelineThread | None = None
+        self._pipeline_context: dict | None = None
         self._calibration_thread: CalibrationWorkflowThread | None = None
         self._calibration_preflight_thread: CalibrationPreflightThread | None = None
         self._scan_import_thread: ScanImportThread | None = None
@@ -97,17 +98,17 @@ class DashboardTestWindow(QMainWindow):
         calibration = toolbar.addAction("Calibration Mode")
         calibration.triggered.connect(lambda: self.switch_to(self.calibration_view))
 
-        timing = toolbar.addAction("Timing Calibration")
+        timing = toolbar.addAction("Global Settings")
         timing.triggered.connect(self.open_global_timing_dialog)
 
     def open_global_timing_dialog(self):
         settings = load_global_timing_settings()
-        dialog = GlobalTimingSettingsDialog(current_timing=settings.get("timing", {}), parent=self)
+        dialog = GlobalTimingSettingsDialog(current_settings=settings, parent=self)
         if dialog.exec():
-            settings["timing"] = dialog.get_timing_settings()
+            settings.update(dialog.get_settings())
             save_global_timing_settings(settings)
-            self.auto_dashboard.add_notification("Updated global timing calibration defaults", "done")
-            self.step_dashboard.add_notification("Updated global timing calibration defaults", "done")
+            self.auto_dashboard.add_notification("Updated global timing, GPS, and Fusion defaults", "done")
+            self.step_dashboard.add_notification("Updated global timing, GPS, and Fusion defaults", "done")
 
     def _connect_signals(self):
         self.auto_dashboard.switchToStepModeRequested.connect(lambda: self.switch_to(self.step_dashboard))
@@ -179,12 +180,12 @@ class DashboardTestWindow(QMainWindow):
                 except Exception:
                     pass
 
-    def refresh_dashboards(self):
-        self.auto_dashboard.refresh_scans()
-        self.step_dashboard.refresh_scans()
+    def refresh_dashboards(self, *, force: bool = True):
+        self.auto_dashboard.refresh_scans(force=force)
+        self.step_dashboard.refresh_scans(force=force)
 
     def refresh_dashboards_for_scan(self, scan_name: str | None = None):
-        self.refresh_dashboards()
+        self.refresh_dashboards(force=True)
         if scan_name:
             self.auto_dashboard.select_scan(scan_name)
             self.step_dashboard.select_scan(scan_name)
@@ -269,14 +270,19 @@ class DashboardTestWindow(QMainWindow):
         chosen, _ = QFileDialog.getOpenFileName(self, title, "", pattern)
         return chosen
 
-    def ensure_pipeline_configuration(self, scan_ref: str | Path) -> tuple[Path, dict] | None:
+    def ensure_pipeline_configuration(self, scan_ref: str | Path) -> tuple[Path, dict, dict] | None:
         scan_dir, metadata = load_scan_metadata(scan_ref)
         changed = False
         fusion_cfg = metadata.setdefault("config", {}).setdefault("fusion", {})
-        calibration_run = resolve_scan_path(scan_dir, fusion_cfg.get("calibration_run_dir")) or resolve_scan_path(
+        stored_calibration_run = resolve_scan_path(scan_dir, fusion_cfg.get("calibration_run_dir")) or resolve_scan_path(
             scan_dir, metadata.get("files", {}).get("calibration_run_dir")
         )
-        calibration_run = resolve_calibration_run(calibration_run, fallback_to_latest=True)
+        if stored_calibration_run is not None and stored_calibration_run.exists():
+            calibration_run = stored_calibration_run.resolve()
+            calibration_source = "explicit scan link"
+        else:
+            calibration_run = resolve_calibration_run(None, fallback_to_latest=True)
+            calibration_source = "auto-selected latest calibration"
         if calibration_run is None:
             chosen = QFileDialog.getExistingDirectory(
                 self,
@@ -291,6 +297,7 @@ class DashboardTestWindow(QMainWindow):
                 )
                 return None
             calibration_run = Path(chosen)
+            calibration_source = "manually selected calibration"
 
         fusion_cfg["calibration_run_dir"] = relativize_for_scan(scan_dir, calibration_run)
         changed = True
@@ -298,9 +305,12 @@ class DashboardTestWindow(QMainWindow):
         if changed:
             save_scan_metadata(scan_dir, metadata)
             scan_dir, metadata = load_scan_metadata(scan_dir)
-        return scan_dir, metadata
+        return scan_dir, metadata, {
+            "calibration_run": str(calibration_run),
+            "calibration_source": calibration_source,
+        }
 
-    def _start_pipeline_thread(self, scan_dir: Path, mode: str):
+    def _start_pipeline_thread(self, scan_dir: Path, mode: str, *, fusion_context: dict | None = None):
         if self._pipeline_thread is not None and self._pipeline_thread.isRunning():
             QMessageBox.information(self, "Pipeline Busy", "A backend pipeline is already running.")
             return
@@ -308,8 +318,13 @@ class DashboardTestWindow(QMainWindow):
         self.auto_dashboard.clear_log()
         self.step_dashboard.clear_log()
         self._on_pipeline_log(f"[pipeline] Starting {mode} for {scan_dir.name}")
+        self._pipeline_context = {
+            "scan_dir": str(scan_dir),
+            "mode": mode,
+            **(fusion_context or {}),
+        }
 
-        self._pipeline_thread = BackendPipelineThread(scan_dir, mode=mode, parent=self)
+        self._pipeline_thread = BackendPipelineThread(scan_dir, mode=mode, fusion_context=fusion_context, parent=self)
         self._pipeline_thread.logLine.connect(self._on_pipeline_log)
         self._pipeline_thread.stageChanged.connect(self._on_pipeline_stage)
         self._pipeline_thread.completed.connect(self._on_pipeline_complete)
@@ -320,13 +335,13 @@ class DashboardTestWindow(QMainWindow):
         prepared = self.ensure_pipeline_configuration(scan_ref)
         if prepared is None:
             return
-        scan_dir, _ = prepared
+        scan_dir, _, fusion_context = prepared
         summary = (
             f"Running full backend chain for {scan_dir.name}: Rosbag Preprocessing -> Wires -> Image Inference -> Fusion + GPS"
         )
         self.auto_dashboard.add_notification(summary, "running")
         self.step_dashboard.add_notification(summary, "running")
-        self._start_pipeline_thread(scan_dir, mode="full")
+        self._start_pipeline_thread(scan_dir, mode="full", fusion_context=fusion_context)
 
     def run_pipeline_step(self, scan_ref: str, step_key: str):
         scan_dir, metadata = load_scan_metadata(scan_ref)
@@ -350,9 +365,9 @@ class DashboardTestWindow(QMainWindow):
             prepared = self.ensure_pipeline_configuration(scan_dir)
             if prepared is None:
                 return
-            scan_dir, metadata = prepared
+            scan_dir, metadata, fusion_context = prepared
             self.step_dashboard.add_notification(f"Running fusion and GPS georeferencing for {scan_dir.name}", "running")
-            self._start_pipeline_thread(scan_dir, mode="fusion")
+            self._start_pipeline_thread(scan_dir, mode="fusion", fusion_context=fusion_context)
             return
 
         if step_key == "filtering":
@@ -408,11 +423,24 @@ class DashboardTestWindow(QMainWindow):
     def _build_pipeline_output_summary(self, scan_dir: Path, mode: str) -> tuple[str, str]:
         _, metadata = load_scan_metadata(scan_dir)
         artifacts = resolve_artifact_paths(scan_dir, metadata)
+        fusion_context = self._pipeline_context or {}
 
         def _add_path(lines: list[str], label: str, key: str):
             path = artifacts.get(key)
             if path is not None and path.exists():
                 lines.append(f"{label}: {path}")
+
+        def _add_fusion_inputs(lines: list[str]):
+            point_cloud_key, point_cloud_path = first_existing_artifact(scan_dir, metadata, ("filtered_pcd", "raw_pcd", "pcd"))
+            if point_cloud_key is not None and point_cloud_path is not None:
+                lines.append(f"Fusion point cloud ({point_cloud_key}): {point_cloud_path}")
+
+            calibration_run = fusion_context.get("calibration_run")
+            calibration_source = fusion_context.get("calibration_source")
+            if calibration_run and calibration_source:
+                lines.append(f"Calibration run ({calibration_source}): {calibration_run}")
+            else:
+                _add_path(lines, "Calibration run", "calibration_run_dir")
 
         lines: list[str] = []
         title_by_mode = {
@@ -444,6 +472,7 @@ class DashboardTestWindow(QMainWindow):
             _add_path(lines, "Masks directory", "masks_dir")
             _add_path(lines, "Metadata directory", "meta_dir")
         elif mode == "fusion":
+            _add_fusion_inputs(lines)
             _add_path(lines, "Fusion objects", "fused_objects")
             _add_path(lines, "Fused semantic map", "fused_map")
             _add_path(lines, "Pole spacing JSON", "pole_neighbor_distances")
@@ -459,6 +488,7 @@ class DashboardTestWindow(QMainWindow):
             _add_path(lines, "Images folder", "images_dir")
             _add_path(lines, "Wire points", "wires_points")
             _add_path(lines, "Inference output", "yolo_output_dir")
+            _add_fusion_inputs(lines)
             _add_path(lines, "Fusion objects", "fused_objects")
             _add_path(lines, "Fused semantic map", "fused_map")
             _add_path(lines, "Georeferenced objects", "georeferenced_objects")
@@ -475,20 +505,22 @@ class DashboardTestWindow(QMainWindow):
         title, summary = self._build_pipeline_output_summary(scan_dir, mode)
         self.auto_dashboard.add_notification(f"{title} for {scan_dir.name}", "done")
         self.step_dashboard.add_notification(f"{title} for {scan_dir.name}", "done")
-        self.refresh_dashboards()
+        self.refresh_dashboards(force=True)
         self.auto_dashboard.status_label.setText(f"{title} for {scan_dir.name}")
         self.step_dashboard.status_label.setText(f"{title} for {scan_dir.name}")
         for line in summary.splitlines():
             self._on_pipeline_log(line)
         self._pipeline_thread = None
+        self._pipeline_context = None
         QMessageBox.information(self, title, summary)
 
     def _on_pipeline_failed(self, message: str):
         self.auto_dashboard.add_notification(message, "error")
         self.step_dashboard.add_notification(message, "error")
         self._on_pipeline_log(f"[error] {message}")
-        self.refresh_dashboards()
+        self.refresh_dashboards(force=True)
         self._pipeline_thread = None
+        self._pipeline_context = None
         QMessageBox.warning(self, "Pipeline", message)
 
     def _calibration_job_running(self) -> bool:

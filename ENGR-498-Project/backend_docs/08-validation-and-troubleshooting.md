@@ -15,6 +15,11 @@ Check:
 - `tf_camera_out.csv` has valid `OK` rows
 - `tf_gps_out.csv` has valid `OK` rows when GPS is present
 - `pcd/scans.pcd` exists and is non-empty
+- `tf_dense_trajectory.csv` exists and has at least as many rows as the bag
+  duration in seconds divided by the sample interval (default 10 ms → ~100 rows
+  per second of bag time)
+- the `status` column in `tf_dense_trajectory.csv` is exclusively `OK` after
+  sanitization (non-OK rows should have been dropped)
 
 ### Inference validation
 
@@ -50,6 +55,11 @@ Check:
 | Docker workflow exits immediately | path conversion or container startup issue | `launcher/run_pipeline.py`, `compose.yaml` |
 | No `tf_camera_out.csv` rows | image topic not detected or replay stalled | `run_pose_recovery_camera_gps.sh`, `tf_sample_camera_gps.py` |
 | No `tf_gps_out.csv` rows | GPS topic not detected or bag has no `NavSatFix` messages | `run_pose_recovery_camera_gps.sh`, `tf_sample_camera_gps.py` |
+| `tf_dense_trajectory.csv` missing or empty | dense sampler never received its first TF stamp; FAST-LIO may not have started | `logs/fastlio.log`, `logs/sampler.log`; check that FAST-LIO published to `/tf` |
+| `tf_dense_trajectory.csv` has many non-OK rows | `tf2_ros` buffer gaps during replay; sampler queried timestamps before TF arrived | inspect `status` column; consider increasing `DENSE_TRAJ_INTERVAL_SEC` |
+| Fusion falls back to sparse interpolation despite dense CSV present | file path not passed via `--dense-traj-csv`, or file path resolves to a different run | check `gui_pipeline.py` metadata resolution; confirm `tf_dense_traj_csv` key in scan metadata |
+| Fusion drops all frames in time-offset mode | `t_query` values fall outside the dense trajectory bounds | check that `--time-offset-sec` is not larger than the bag duration; inspect trajectory bounds in the Fusion log |
+| Interpolated object positions are jittery or wrong | dense trajectory file from a different run than the images | ensure `tf_dense_trajectory.csv` and `tf_camera_out.csv` are from the same preprocessing run |
 | Inference outputs incomplete | local runtime failure or incomplete Colab export | `run_yolo_inference.py`, `import_colab_inference_results.py` |
 | Fusion says “no allowed detections” | class-name mismatch | `fuse_masks_to_slam.py`, inference metadata |
 | Fusion says “no map points landed inside allowed masks” | calibration/timing/image-orientation mismatch | calibration files, timestamps, masks |

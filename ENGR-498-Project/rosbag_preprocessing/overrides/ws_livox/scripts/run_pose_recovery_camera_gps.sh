@@ -4,11 +4,12 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  run_pose_recovery_camera_gps.sh [bag_path] [--output-root DIR] [--image-topic TOPIC] [--gps-topic TOPIC] [--camera-time-offset-sec OFFSET] [--master-port PORT] [--remap RULE] [--rviz]
+  run_pose_recovery_camera_gps.sh [bag_path] [--output-root DIR] [--image-topic TOPIC] [--gps-topic TOPIC] [--gps-optional] [--camera-time-offset-sec OFFSET] [--master-port PORT] [--remap RULE] [--rviz]
 
 Examples:
   run_pose_recovery_camera_gps.sh ~/ws_livox/bags/my_run.bag
   run_pose_recovery_camera_gps.sh ~/ws_livox/bags/my_run.bag --image-topic /camera/image/compressed --gps-topic /fix
+  run_pose_recovery_camera_gps.sh ~/ws_livox/bags/my_run.bag --gps-optional
   run_pose_recovery_camera_gps.sh ~/ws_livox/bags/my_run.bag --rviz
 EOF
 }
@@ -214,6 +215,7 @@ UNPAUSE_DELAY_MS="${UNPAUSE_DELAY_MS:-3000}"
 DISCOVERY_TIMEOUT_WALL_SEC="${DISCOVERY_TIMEOUT_WALL_SEC:-30}"
 REMAPS=()
 ENABLE_RVIZ=0
+GPS_OPTIONAL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -236,6 +238,10 @@ while [[ $# -gt 0 ]]; do
     --master-port)
       MASTER_PORT="$2"
       shift 2
+      ;;
+    --gps-optional)
+      GPS_OPTIONAL=1
+      shift
       ;;
     --camera-time-offset-sec)
       CAMERA_TIME_OFFSET_SEC="$2"
@@ -335,6 +341,15 @@ if [[ -z "$GPS_TOPIC" ]]; then
   GPS_TOPIC="$(detect_bag_topic "$BAG" "gps")"
 fi
 
+if [[ -z "$GPS_TOPIC" ]]; then
+  if (( GPS_OPTIONAL == 1 )); then
+    echo "[preflight] GPS optional developer mode enabled: no NavSatFix topic detected in the bag."
+  else
+    echo "ERROR: No NavSatFix topic detected in the bag. Re-run with --gps-optional to allow preprocessing without GPS." >&2
+    exit 2
+  fi
+fi
+
 mapfile -t LIDAR_TOPIC_INFO < <(inspect_topic_message "$BAG" "$LIDAR_TOPIC")
 LIDAR_MSG_TYPE="${LIDAR_TOPIC_INFO[0]:-}"
 LIDAR_FIELD_NAMES="${LIDAR_TOPIC_INFO[1]:-}"
@@ -357,6 +372,7 @@ echo "[preflight] bag:              $BAG"
 echo "[preflight] output dir:       $RUN_OUT_DIR"
 echo "[preflight] image topic:      ${IMAGE_TOPIC:-auto-runtime-detect}"
 echo "[preflight] gps topic:        ${GPS_TOPIC:-auto-runtime-detect}"
+echo "[preflight] gps optional:     $([[ "$GPS_OPTIONAL" == "1" ]] && echo true || echo false)"
 echo "[preflight] lidar topic:      ${LIDAR_TOPIC}"
 echo "[preflight] lidar type:       ${LIDAR_MSG_TYPE:-unknown}"
 echo "[preflight] lidar fields:     ${LIDAR_FIELD_NAMES:-unknown}"
@@ -479,6 +495,9 @@ if [[ -n "$IMAGE_TOPIC" ]]; then
 fi
 if [[ -n "$GPS_TOPIC" ]]; then
   SAMPLER_CMD+=(--gps-topic "$GPS_TOPIC")
+fi
+if (( GPS_OPTIONAL == 1 )); then
+  SAMPLER_CMD+=(--gps-optional)
 fi
 
 : > "$SAMPLER_LOG"

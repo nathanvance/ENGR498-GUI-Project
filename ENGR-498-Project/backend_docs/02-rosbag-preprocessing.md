@@ -91,11 +91,12 @@ Samples `/tf` at the moment each image or GPS message arrives. This is the origi
 design. It produces:
 
 - `tf_camera_out.csv` — one row per camera frame
-- `tf_gps_out.csv` — one row per GPS fix (with GPS coordinates appended)
+- `tf_gps_out.csv` — one row per GPS fix (with GPS coordinates appended); in the
+  explicit GPS-optional developer mode this file may sanitize down to just the header
 
 These files are used by:
 - `fuse_masks_to_slam.py` when time-offset is disabled (nearest-pose matching)
-- `georeference_from_tf_gps.py` for GPS alignment (always uses `tf_gps_out.csv`)
+- `georeference_from_tf_gps.py` for GPS alignment when usable GPS rows exist
 
 ### Dense trajectory path (new)
 

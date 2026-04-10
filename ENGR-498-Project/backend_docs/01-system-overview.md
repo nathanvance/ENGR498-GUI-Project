@@ -73,6 +73,7 @@ sequenceDiagram
     Fast-->>Dock: Build map / scans.pcd
     Samp-->>Dock: Write images/, image_timestamps.csv
     Samp-->>Dock: Write tf_camera_out.csv, tf_gps_out.csv
+    Samp-->>Dock: Write tf_dense_trajectory.csv (dense 10 ms pose grid)
     Dock-->>Win: Persist outputs under rosbag_preprocessing/outputs
 
     User->>Win: Launch inference
@@ -100,7 +101,7 @@ sequenceDiagram
 Every stage writes explicit artifacts for the next stage. Examples:
 
 - pose recovery writes `images/`, `image_timestamps.csv`, `tf_camera_out.csv`,
-  `tf_gps_out.csv`, and `pcd/scans.pcd`
+  `tf_gps_out.csv`, `tf_dense_trajectory.csv`, and `pcd/scans.pcd`
 - inference writes `masks_npz/` and `meta_json/`
 - fusion writes `fused_objects.json` and `pole_neighbor_distances.json`
 - georeferencing writes `gps_alignment.json` and georeferenced JSON copies

@@ -19,6 +19,7 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon
 
 from scan_metadata import load_scan_metadata, resolve_scan_path, save_scan_metadata
+from timing_settings import load_global_timing_settings, save_global_timing_settings
 
 
 class StatusIndicator(QWidget):
@@ -190,12 +191,12 @@ class DashboardView(QWidget):
     }
 
     STEP_TOOLTIPS = {
-        "slam": "Runs rosbag preprocessing: FAST-LIO SLAM, JPG export from /image/compressed, and camera/GPS TF sampling.",
+        "slam": "Runs rosbag preprocessing: FAST-LIO SLAM, JPG export from /image/compressed, dense /tf sampling, and GPS TF sampling when available.",
         "filtering": "Optional manual point-cloud cleanup stage.",
         "flai": "External/manual segmentation stage if used.",
         "wire_extraction": "MATLAB wire extraction outputs for wires_points.npz, wire_info.json, and ground points.",
         "inference": "YOLO segmentation on the JPG images exported during Rosbag Preprocessing. The GUI defaults to the local NVIDIA GPU and bundled repo weights when available.",
-        "fusion": "Mask projection, dense-cluster cleanup, instance clustering, pole spacing, and optional GPS georeferencing. This stage consumes calibration outputs produced in Calibration Mode.",
+        "fusion": "Mask projection, dense-cluster cleanup, instance clustering, pole spacing, and GPS georeferencing when usable GPS samples exist. Developer mode can skip georeferencing for no-GPS bags.",
     }
     
     def __init__(self, assets_path="assets", parent=None):
@@ -203,6 +204,7 @@ class DashboardView(QWidget):
         self.assets_path = Path(assets_path)
         self.selected_scan = None
         self.scans_data = {}  # {scan_name: metadata}
+        self._scan_snapshot = ()
         
         self._setup_ui()
         self._setup_refresh_timer()
@@ -389,6 +391,27 @@ class DashboardView(QWidget):
         )
         self.rviz_checkbox.stateChanged.connect(self._on_rviz_checkbox_changed)
         layout.addWidget(self.rviz_checkbox)
+
+        btn_global_settings = QPushButton("Global Settings")
+        btn_global_settings.setToolTip(
+            "Set global timing defaults, the GPS developer-mode override, and the Fusion visualization default."
+        )
+        btn_global_settings.setStyleSheet("""
+            QPushButton {
+                background-color: #0F766E;
+                color: white;
+                border: none;
+                padding: 10px 18px;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #115E59;
+            }
+        """)
+        btn_global_settings.clicked.connect(self._open_global_settings_dialog)
+        layout.addWidget(btn_global_settings)
         
         layout.addStretch()
         
@@ -427,7 +450,7 @@ class DashboardView(QWidget):
                 background-color: #e0e0e0;
             }
         """)
-        btn_refresh.clicked.connect(self.refresh_scans)
+        btn_refresh.clicked.connect(lambda: self.refresh_scans(force=True))
         layout.addWidget(btn_refresh)
         
         return bar
@@ -496,13 +519,31 @@ class DashboardView(QWidget):
         self.refresh_timer = QTimer()
         self.refresh_timer.timeout.connect(self.refresh_scans)
         self.refresh_timer.start(3000)  # Refresh every 3 seconds
-    
-    def refresh_scans(self):
+
+    def _collect_scan_snapshot(self) -> tuple[tuple[str, int, int], ...]:
+        snapshot = []
+        if not self.assets_path.exists():
+            return tuple()
+
+        for scan_dir in sorted(self.assets_path.iterdir(), key=lambda path: path.name):
+            metadata_path = scan_dir / "metadata.json"
+            if not scan_dir.is_dir() or not metadata_path.is_file():
+                continue
+            stat = metadata_path.stat()
+            snapshot.append((scan_dir.name, stat.st_mtime_ns, stat.st_size))
+        return tuple(snapshot)
+
+    def refresh_scans(self, force: bool = False):
         """Refresh scan data from assets directory"""
         if not self.assets_path.exists():
             self.assets_path.mkdir(parents=True, exist_ok=True)
             return
 
+        snapshot = self._collect_scan_snapshot()
+        if not force and snapshot == self._scan_snapshot:
+            return
+
+        self._scan_snapshot = snapshot
         selected_scan = self.selected_scan
         self.scans_data = {}
         
@@ -791,10 +832,10 @@ class DashboardView(QWidget):
         metadata.setdefault("config", {}).setdefault("pose_recovery", {})["enable_rviz"] = is_checked
         save_scan_metadata(scan_dir, metadata)
         self.scans_data[self.selected_scan] = metadata
+        self._scan_snapshot = self._collect_scan_snapshot()
         state_text = "enabled" if is_checked else "disabled"
         self.add_notification(f"RViz preview {state_text} for {self.selected_scan}", "info")
         self.status_label.setText(f"Rosbag Preprocessing RViz preview {state_text} for {self.selected_scan}")
-        self.refresh_scans()
     
     def _run_full_pipeline(self):
         """Run full pipeline for selected scan"""
@@ -805,6 +846,17 @@ class DashboardView(QWidget):
                 f"Started backend chain for {self.selected_scan}: Rosbag Preprocessing -> Wires -> Image Inference -> Fusion + GPS",
                 "running",
             )
+
+    def _open_global_settings_dialog(self):
+        from views.lidar_dashboard_stepbystep import GlobalTimingSettingsDialog
+
+        settings = load_global_timing_settings()
+        dialog = GlobalTimingSettingsDialog(current_settings=settings, parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            settings.update(dialog.get_settings())
+            save_global_timing_settings(settings)
+            self.add_notification("Updated global timing, GPS, and Fusion defaults", "done")
+            self.status_label.setText("Updated global timing, GPS, and Fusion defaults.")
     
     def _delete_scan(self, scan_name):
         """Delete a scan after confirmation"""

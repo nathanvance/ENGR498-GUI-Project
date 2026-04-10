@@ -13,6 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from calibration_bridge import export_fusion_calibration_artifacts, resolve_calibration_run
+from gps_csv_utils import count_usable_tf_gps_rows
 from project_paths import FUSION_DIR, MATLAB_EXTRACT_DIR, PROJECT_ROOT, ROSBAG_PREPROCESSING_DIR
 from scan_metadata import (
     first_existing_artifact,
@@ -24,7 +25,11 @@ from scan_metadata import (
     update_file_entry,
     update_status,
 )
-from timing_settings import resolve_effective_timing
+from timing_settings import (
+    resolve_effective_timing,
+    resolve_global_fusion_settings,
+    resolve_global_gps_settings,
+)
 
 
 RUN_POSE_RECOVERY_SCRIPT = ROSBAG_PREPROCESSING_DIR / "launcher" / "run_transform_reading_workflow.py"
@@ -231,10 +236,18 @@ class BackendPipelineThread(QThread):
     completed = Signal(str, str)
     failed = Signal(str)
 
-    def __init__(self, scan_ref: str | Path, *, mode: str = "full", parent=None) -> None:
+    def __init__(
+        self,
+        scan_ref: str | Path,
+        *,
+        mode: str = "full",
+        fusion_context: dict | None = None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.scan_ref = str(scan_ref)
         self.mode = mode
+        self.fusion_context = dict(fusion_context or {})
 
     def emit_log(self, text: str) -> None:
         self.logLine.emit(text.rstrip())
@@ -255,9 +268,21 @@ class BackendPipelineThread(QThread):
         if return_code != 0:
             raise RuntimeError(f"Command failed with exit code {return_code}: {' '.join(command)}")
 
+    @staticmethod
+    def _gps_optional_enabled(metadata: dict) -> tuple[bool, str]:
+        gps_cfg = metadata.get("config", {}).get("gps", {})
+        per_scan_enabled = bool(gps_cfg.get("allow_missing", False))
+        global_enabled = bool(resolve_global_gps_settings().get("allow_missing", False))
+        if per_scan_enabled:
+            return True, "per-scan"
+        if global_enabled:
+            return True, "global"
+        return False, "disabled"
+
     def _run_pose_recovery(self, scan_dir: Path, metadata: dict) -> Path:
         effective_timing = resolve_effective_timing(metadata)
         pose_cfg = metadata.get("config", {}).get("pose_recovery", {})
+        allow_missing_gps, gps_mode_source = self._gps_optional_enabled(metadata)
         files = metadata["files"]
         bag_path = resolve_scan_path(scan_dir, files.get("rosbag"))
         if bag_path is None or not bag_path.is_file():
@@ -279,6 +304,14 @@ class BackendPipelineThread(QThread):
         ]
         if pose_cfg.get("enable_rviz"):
             command.append("--rviz")
+        if allow_missing_gps:
+            command.append("--gps-optional")
+            self.emit_log(
+                "[gps] developer mode enabled "
+                f"({gps_mode_source} setting): pose recovery may continue without NavSatFix data."
+            )
+        else:
+            self.emit_log("[gps] GPS required: pose recovery will fail if no NavSatFix data is available.")
         self.emit_log("[timing] pose-recovery uses unshifted camera timestamps; fusion owns timing offset handling.")
         self.run_command(command)
 
@@ -342,6 +375,16 @@ class BackendPipelineThread(QThread):
         self.emit_log(f"[outputs] dense trajectory: {dense_traj_path}")
         return latest_run
 
+    def _clear_georeference_artifacts(self, scan_dir: Path, metadata: dict) -> None:
+        for key in (
+            "gps_output_dir",
+            "gps_alignment",
+            "tf_gps_georeferenced_csv",
+            "georeferenced_objects",
+            "georeferenced_powerline_overlay",
+        ):
+            update_file_entry(metadata, scan_dir, key, None)
+
     def _resolve_wire_input_las(self, scan_dir: Path, metadata: dict) -> Path:
         point_clouds_dir = scan_dir / "processed" / "point_clouds"
         key, candidate = first_existing_artifact(
@@ -399,13 +442,41 @@ class BackendPipelineThread(QThread):
         return powerline_overlay
 
     def _maybe_georeference(self, scan_dir: Path, metadata: dict, *, tf_gps_path: Path | None, objects_json: Path | None = None, powerline_overlay: Path | None = None) -> None:
-        if tf_gps_path is None or not tf_gps_path.is_file():
-            return
         if (objects_json is None or not objects_json.is_file()) and (powerline_overlay is None or not powerline_overlay.is_file()):
             return
 
         config = metadata.get("config", {})
         gps_cfg = config.get("gps", {})
+        allow_missing_gps, gps_mode_source = self._gps_optional_enabled(metadata)
+        min_fix_status = int(gps_cfg.get("min_fix_status", 0))
+        max_horizontal_cov_m2 = float(gps_cfg.get("max_horizontal_cov_m2", 1000.0))
+        usable_rows = 0
+        if tf_gps_path is not None and tf_gps_path.is_file():
+            usable_rows = count_usable_tf_gps_rows(
+                tf_gps_path,
+                min_fix_status=min_fix_status,
+                max_horizontal_cov_m2=max_horizontal_cov_m2,
+            )
+
+        if tf_gps_path is None or not tf_gps_path.is_file() or usable_rows < 3:
+            self._clear_georeference_artifacts(scan_dir, metadata)
+            save_scan_metadata(scan_dir, metadata)
+
+            gps_source = "<missing>" if tf_gps_path is None else str(tf_gps_path)
+            if allow_missing_gps:
+                self.emit_log(
+                    "[gps] Skipping georeferencing: "
+                    f"{usable_rows} usable GPS rows from {gps_source}. "
+                    f"Developer mode ({gps_mode_source} setting) allows this scan to continue without GPS."
+                )
+                return
+
+            raise RuntimeError(
+                "GPS georeferencing requires at least 3 usable NavSatFix/TF rows, "
+                f"but only {usable_rows} were available from {gps_source}. "
+                "Enable developer mode in Fusion settings to allow missing GPS, or use a GPS-equipped bag."
+            )
+
         gps_output_dir = scan_dir / "processed" / "fusion" / "gps"
         gps_output_dir.mkdir(parents=True, exist_ok=True)
         georef_command = [
@@ -418,7 +489,7 @@ class BackendPipelineThread(QThread):
             "--gps-to-lidar-offset-body",
             str(config.get("gps", {}).get("offset_body_xyz_m", "0,0,0")),
             "--max-horizontal-cov-m2",
-            str(gps_cfg.get("max_horizontal_cov_m2", 1000.0)),
+            str(max_horizontal_cov_m2),
         ]
         if objects_json is not None and objects_json.is_file():
             georef_command.extend(["--objects-json", str(objects_json)])
@@ -464,7 +535,7 @@ class BackendPipelineThread(QThread):
         self._maybe_georeference(scan_dir, metadata, tf_gps_path=tf_gps_path, powerline_overlay=powerline_overlay)
         return output_dir
 
-    def _resolve_calibration_artifacts(self, scan_dir: Path, metadata: dict) -> tuple[Path, Path]:
+    def _resolve_calibration_artifacts(self, scan_dir: Path, metadata: dict) -> tuple[Path, Path, Path]:
         fusion_cfg = metadata.get("config", {}).get("fusion", {})
         files = metadata.get("files", {})
 
@@ -486,7 +557,7 @@ class BackendPipelineThread(QThread):
         update_file_entry(metadata, scan_dir, "resolved_intrinsics_json", intrinsics_json)
         update_file_entry(metadata, scan_dir, "resolved_extrinsics_json", extrinsics_json)
         save_scan_metadata(scan_dir, metadata)
-        return intrinsics_json, extrinsics_json
+        return calibration_run, intrinsics_json, extrinsics_json
 
     def _run_yolo_inference(self, scan_dir: Path, metadata: dict, pose_run: Path) -> tuple[Path, Path, Path]:
         config = metadata.get("config", {})
@@ -541,13 +612,16 @@ class BackendPipelineThread(QThread):
         config = metadata.get("config", {})
         fusion_cfg = config.get("fusion", {})
         effective_timing = resolve_effective_timing(metadata)
+        fusion_global_cfg = resolve_global_fusion_settings()
         fusion_offset_sec = float(effective_timing.get("fusion_time_offset_sec", 0.0))
         use_fusion_interpolation = abs(fusion_offset_sec) > 1e-12
+        visualize_fusion = bool(fusion_global_cfg.get("visualize", False))
         self.emit_log(
             "[timing] fusion offset "
             f"{fusion_offset_sec:.6f} sec "
             f"({'interpolated dense/sparse pose lookup' if use_fusion_interpolation else 'nearest camera-pose matching'})"
         )
+        self.emit_log(f"[fusion] visualization {'enabled' if visualize_fusion else 'disabled'} (global setting).")
 
         masks_dir = resolve_scan_path(scan_dir, metadata.get("files", {}).get("masks_dir"))
         meta_dir = resolve_scan_path(scan_dir, metadata.get("files", {}).get("meta_dir"))
@@ -557,8 +631,11 @@ class BackendPipelineThread(QThread):
             update_status(metadata, "inference", "done")
             save_scan_metadata(scan_dir, metadata)
 
-        intrinsics_path, extrinsics_path = self._resolve_calibration_artifacts(scan_dir, metadata)
-        _, fusion_point_cloud = first_existing_artifact(
+        calibration_run, intrinsics_path, extrinsics_path = self._resolve_calibration_artifacts(scan_dir, metadata)
+        calibration_source = str(self.fusion_context.get("calibration_source") or "scan-linked calibration")
+        self.emit_log(f"[fusion] calibration source: {calibration_source} -> {calibration_run}")
+
+        fusion_point_cloud_key, fusion_point_cloud = first_existing_artifact(
             scan_dir,
             metadata,
             ("filtered_pcd", "raw_pcd", "pcd"),
@@ -567,6 +644,7 @@ class BackendPipelineThread(QThread):
             raise FileNotFoundError(
                 "Fusion requires a point cloud. Expected one of: filtered PCD, raw PCD, or a legacy pcd entry."
             )
+        self.emit_log(f"[fusion] point cloud source: {fusion_point_cloud_key} -> {fusion_point_cloud}")
 
         fusion_output_dir = scan_dir / "processed" / "fusion"
         fusion_output_dir.mkdir(parents=True, exist_ok=True)
@@ -596,8 +674,9 @@ class BackendPipelineThread(QThread):
             "filename",
             "--time-offset-sec",
             str(fusion_offset_sec),
-            "--no-visualize",
         ]
+        if not visualize_fusion:
+            fusion_command.append("--no-visualize")
         dense_traj_path = resolve_scan_path(
             scan_dir, metadata.get("files", {}).get("tf_dense_traj_csv")
         )

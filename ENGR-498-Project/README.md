@@ -6,8 +6,8 @@ This folder contains the portable project code used across the Senior Design
 workflow:
 
 - `fusion/`
-  Camera-to-LiDAR semantic fusion, GPS georeferencing, Leaflet output, and
-  local/Colab YOLO inference helpers.
+  Camera-to-LiDAR semantic fusion, optional GPS georeferencing, Leaflet output,
+  and local/Colab YOLO inference helpers.
 - `rosbag_preprocessing/`
   Docker + WSL preprocessing for:
   - direct visual LiDAR calibration
@@ -238,7 +238,19 @@ The pose-recovery workflow produces:
 - `image_timestamps.csv`
 - `tf_camera_out.csv`
 - `tf_gps_out.csv`
+- `tf_dense_trajectory.csv`
 - `pcd/scans.pcd`
+
+`tf_dense_trajectory.csv` is a new output added alongside the existing event-driven
+CSVs. It samples the LiDAR pose from `/tf` uniformly every 10 ms over the full bag
+duration rather than only at image or GPS events. The Fusion stage automatically uses
+it when `fusion_time_offset_enabled` is on, providing smoother and more accurate
+pose interpolation at arbitrary shifted timestamps.
+
+GPS remains required by default. For developer testing with no-GPS bags, the GUI now
+offers an explicit per-scan developer mode that allows pose recovery and Fusion to run
+without GPS while skipping georeferencing cleanly. Fusion visualization also has a
+global GUI default in `gui_settings.json`.
 
 The integrated dashboard also stages those raw point-cloud artifacts under the
 scan folder as:
@@ -284,6 +296,19 @@ In the integrated GUI, Fusion does not ask the user to browse intrinsics or
 extrinsics JSON files manually. Instead, it links a completed calibration run
 and automatically exports Fusion-ready intrinsics/extrinsics artifacts from the
 calibration `calib.json`.
+
+**Time-offset mode and dense trajectory interpolation:**
+When `fusion_time_offset_enabled` is turned on in the GUI timing settings, Fusion
+shifts each camera frame's timestamp by `fusion_time_offset_sec` before pose lookup.
+If `tf_dense_trajectory.csv` is present in the pose-recovery run folder (which it
+always will be after a fresh preprocessing run), Fusion uses it as the pose source
+for that lookup instead of the sparser event-driven `tf_camera_out.csv`. The dense
+trajectory is loaded once, quaternion sign continuity is enforced across the full
+sequence, and each frame gets a locally interpolated pose using linear translation
+lerp and quaternion SLERP between the two bracketing 10 ms samples. Frames whose
+shifted timestamp falls outside the trajectory bounds are dropped. If the dense
+trajectory file is absent, Fusion falls back to the old sparse interpolation path
+with a warning printed to the log.
 
 When launched from the integrated GUI, the backend writes into the selected
 scan folder under:
