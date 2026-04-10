@@ -347,31 +347,9 @@ class FusionParametersDialog(QDialog):
         timing_title.setStyleSheet("font-weight: bold; color: #1f3a5f; margin-top: 6px;")
         layout.addWidget(timing_title)
 
-        self.override_preprocess_cb = QCheckBox("Override preprocessing camera offset")
-        self.override_preprocess_cb.setChecked("preprocess_camera_offset_sec" in timing_overrides or "preprocess_camera_offset_enabled" in timing_overrides)
-        layout.addWidget(self.override_preprocess_cb)
-
-        self.preprocess_enabled_cb = QCheckBox("Enable preprocessing camera offset")
-        self.preprocess_enabled_cb.setChecked(bool(timing_overrides.get("preprocess_camera_offset_enabled", effective_timing.get("preprocess_camera_offset_enabled", False))))
-        layout.addWidget(self.preprocess_enabled_cb)
-
-        self.preprocess_offset_ms = QDoubleSpinBox()
-        self.preprocess_offset_ms.setRange(-5000.0, 5000.0)
-        self.preprocess_offset_ms.setDecimals(3)
-        self.preprocess_offset_ms.setSingleStep(0.5)
-        self.preprocess_offset_ms.setSuffix(" ms")
-        self.preprocess_offset_ms.setValue(
-            float(timing_overrides.get("preprocess_camera_offset_sec", effective_timing.get("preprocess_camera_offset_sec", 0.0))) * 1000.0
-        )
-        form.addRow("Preprocess Offset:", self.preprocess_offset_ms)
-
-        self.override_fusion_cb = QCheckBox("Override Fusion interpolation offset")
-        self.override_fusion_cb.setChecked("fusion_time_offset_sec" in timing_overrides or "fusion_time_offset_enabled" in timing_overrides)
+        self.override_fusion_cb = QCheckBox("Override Fusion time offset")
+        self.override_fusion_cb.setChecked("fusion_time_offset_sec" in timing_overrides)
         layout.addWidget(self.override_fusion_cb)
-
-        self.fusion_enabled_cb = QCheckBox("Enable Fusion time offset interpolation")
-        self.fusion_enabled_cb.setChecked(bool(timing_overrides.get("fusion_time_offset_enabled", effective_timing.get("fusion_time_offset_enabled", False))))
-        layout.addWidget(self.fusion_enabled_cb)
 
         self.fusion_offset_ms = QDoubleSpinBox()
         self.fusion_offset_ms.setRange(-5000.0, 5000.0)
@@ -381,10 +359,11 @@ class FusionParametersDialog(QDialog):
         self.fusion_offset_ms.setValue(
             float(timing_overrides.get("fusion_time_offset_sec", effective_timing.get("fusion_time_offset_sec", 0.0))) * 1000.0
         )
-        form.addRow("Fusion Offset:", self.fusion_offset_ms)
+        form.addRow("Fusion Time Offset:", self.fusion_offset_ms)
 
         effective_label = QLabel(
-            "Unset overrides inherit the global Timing Calibration defaults from the top toolbar control."
+            "A zero fusion offset uses the existing nearest-pose camera CSV matching. "
+            "A non-zero offset shifts frame timestamps and uses interpolated pose lookup."
         )
         effective_label.setWordWrap(True)
         effective_label.setStyleSheet("color: #4b5563; background-color: #eef4ff; padding: 8px; border-radius: 4px;")
@@ -409,11 +388,7 @@ class FusionParametersDialog(QDialog):
             "offset_body_xyz_m": self.gps_offset_edit.text().strip() or "0,0,0",
         }
         timing_overrides = {}
-        if self.override_preprocess_cb.isChecked():
-            timing_overrides["preprocess_camera_offset_enabled"] = bool(self.preprocess_enabled_cb.isChecked())
-            timing_overrides["preprocess_camera_offset_sec"] = float(self.preprocess_offset_ms.value()) / 1000.0
         if self.override_fusion_cb.isChecked():
-            timing_overrides["fusion_time_offset_enabled"] = bool(self.fusion_enabled_cb.isChecked())
             timing_overrides["fusion_time_offset_sec"] = float(self.fusion_offset_ms.value()) / 1000.0
         return fusion_config, gps_config, timing_overrides
 
@@ -443,29 +418,13 @@ class GlobalTimingSettingsDialog(QDialog):
 
         form = QFormLayout()
 
-        self.preprocess_enabled_cb = QCheckBox("Enable preprocessing camera offset")
-        self.preprocess_enabled_cb.setChecked(bool(current_timing.get("preprocess_camera_offset_enabled", False)))
-        form.addRow(self.preprocess_enabled_cb)
-
-        self.preprocess_offset_ms = QDoubleSpinBox()
-        self.preprocess_offset_ms.setRange(-5000.0, 5000.0)
-        self.preprocess_offset_ms.setDecimals(3)
-        self.preprocess_offset_ms.setSingleStep(0.5)
-        self.preprocess_offset_ms.setSuffix(" ms")
-        self.preprocess_offset_ms.setValue(float(current_timing.get("preprocess_camera_offset_sec", 0.0)) * 1000.0)
-        form.addRow("Default Preprocess Offset:", self.preprocess_offset_ms)
-
-        self.fusion_enabled_cb = QCheckBox("Enable Fusion offset interpolation")
-        self.fusion_enabled_cb.setChecked(bool(current_timing.get("fusion_time_offset_enabled", False)))
-        form.addRow(self.fusion_enabled_cb)
-
         self.fusion_offset_ms = QDoubleSpinBox()
         self.fusion_offset_ms.setRange(-5000.0, 5000.0)
         self.fusion_offset_ms.setDecimals(3)
         self.fusion_offset_ms.setSingleStep(0.5)
         self.fusion_offset_ms.setSuffix(" ms")
         self.fusion_offset_ms.setValue(float(current_timing.get("fusion_time_offset_sec", 0.0)) * 1000.0)
-        form.addRow("Default Fusion Offset:", self.fusion_offset_ms)
+        form.addRow("Default Fusion Time Offset:", self.fusion_offset_ms)
 
         layout.addLayout(form)
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -475,9 +434,6 @@ class GlobalTimingSettingsDialog(QDialog):
 
     def get_timing_settings(self):
         return {
-            "preprocess_camera_offset_enabled": bool(self.preprocess_enabled_cb.isChecked()),
-            "preprocess_camera_offset_sec": float(self.preprocess_offset_ms.value()) / 1000.0,
-            "fusion_time_offset_enabled": bool(self.fusion_enabled_cb.isChecked()),
             "fusion_time_offset_sec": float(self.fusion_offset_ms.value()) / 1000.0,
         }
 

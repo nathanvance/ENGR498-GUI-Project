@@ -18,6 +18,11 @@ from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import CompressedImage, Image, NavSatFix
 from tf2_msgs.msg import TFMessage
 from tf2_ros import ConnectivityException, ExtrapolationException, LookupException
+from tf_time_domain import (
+    derive_lookup_time_offset_sec,
+    map_query_time_to_tf_domain as map_query_time_to_tf_domain_impl,
+    map_tf_time_to_query_domain as map_tf_time_to_query_domain_impl,
+)
 
 
 IMAGE_TOPIC_TYPES = ("sensor_msgs/CompressedImage", "sensor_msgs/Image")
@@ -478,8 +483,8 @@ def initialize_timebase(
     timebase.mode = mode
     timebase.first_tf = first_tf
     timebase.first_clock = first_clock
-    if first_clock is not None and abs(first_clock - first_tf) > 60.0:
-        timebase.lookup_time_offset_sec = first_clock - first_tf
+    timebase.lookup_time_offset_sec = derive_lookup_time_offset_sec(first_tf, first_clock)
+    if timebase.lookup_time_offset_sec:
         rospy.loginfo(
             "Applying TF lookup timestamp offset of %.9f seconds (clock -> TF domain).",
             timebase.lookup_time_offset_sec,
@@ -494,9 +499,11 @@ def timebase_stalled(mode: str, tf_mon: TFStampMonitor, clock_mon: Optional[Cloc
 
 
 def map_query_time_to_tf_domain(t_query_sec: float, timebase: TimebaseState) -> float:
-    if timebase.lookup_time_offset_sec:
-        return max(t_query_sec - timebase.lookup_time_offset_sec, 0.0)
-    return t_query_sec
+    return map_query_time_to_tf_domain_impl(t_query_sec, timebase.lookup_time_offset_sec)
+
+
+def map_tf_time_to_query_domain(t_tf_sec: float, timebase: TimebaseState) -> float:
+    return map_tf_time_to_query_domain_impl(t_tf_sec, timebase.lookup_time_offset_sec)
 
 
 def write_camera_row(
@@ -538,6 +545,159 @@ def write_gps_row(
     )
 
 
+class DenseTrajectorySampler:
+    """Samples /tf at a fixed interval over the bag duration and writes tf_dense_trajectory.csv."""
+
+    def __init__(
+        self,
+        out_path: Path,
+        tf_buffer: "tf2_ros.Buffer",
+        tf_mon: TFStampMonitor,
+        use_sim_time: bool,
+        clock_ev: threading.Event,
+        clock_mon: Optional[ClockMonitor],
+        wait_clock_wall_sec: float,
+        wait_tf_wall_sec: float,
+        target: str,
+        source: str,
+        interval_sec: float,
+    ) -> None:
+        self._out_path = out_path
+        self._tf_buffer = tf_buffer
+        self._tf_mon = tf_mon
+        self._use_sim_time = use_sim_time
+        self._clock_ev = clock_ev
+        self._clock_mon = clock_mon
+        self._wait_clock_wall_sec = wait_clock_wall_sec
+        self._wait_tf_wall_sec = wait_tf_wall_sec
+        self._target = target
+        self._source = source
+        self._interval_sec = max(interval_sec, 1e-4)
+        self._thread: Optional[threading.Thread] = None
+        self._file: Optional[object] = None
+        self._writer: Optional[csv.writer] = None
+        self.sample_count = 0
+        self.fail_count = 0
+        self.first_exported_timestamp_sec: Optional[float] = None
+        self.last_exported_timestamp_sec: Optional[float] = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name="dense-traj-sampler", daemon=True)
+        self._thread.start()
+
+    def close(self) -> None:
+        if self._thread is not None:
+            self._thread.join(timeout=10.0)
+        if self._file is not None:
+            try:
+                self._file.close()  # type: ignore[union-attr]
+            except Exception:
+                pass
+
+    def _run(self) -> None:
+        timebase = TimebaseState()
+        ok, status = initialize_timebase(
+            timebase=timebase,
+            use_sim_time=self._use_sim_time,
+            clock_ev=self._clock_ev,
+            clock_mon=self._clock_mon,
+            tf_mon=self._tf_mon,
+            wait_clock_wall_sec=self._wait_clock_wall_sec,
+            wait_tf_wall_sec=self._wait_tf_wall_sec,
+        )
+        if not ok:
+            rospy.logwarn(
+                "[dense_traj] Failed to initialize timebase (%s); dense trajectory will be empty.",
+                status,
+            )
+            return
+
+        t_start = timebase.first_tf
+        if t_start is None:
+            rospy.logwarn("[dense_traj] No first TF stamp; dense trajectory will be empty.")
+            return
+
+        rospy.loginfo(
+            "[dense_traj] Exporting dense trajectory in query/header time. "
+            "first_tf=%.9f first_clock=%s lookup_offset=%.9f",
+            t_start,
+            "None" if timebase.first_clock is None else f"{timebase.first_clock:.9f}",
+            timebase.lookup_time_offset_sec,
+        )
+
+        self._out_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._out_path.open("w", newline="", encoding="utf-8") as f:
+            self._file = f
+            writer = csv.writer(f)
+            writer.writerow(["timestamp_sec", "x", "y", "z", "qx", "qy", "qz", "qw", "status"])
+            f.flush()
+
+            t_cur = t_start
+            # Small lag behind the live bag clock so we never try to look up a future transform.
+            lag_sec = max(self._interval_sec * 2, 0.05)
+
+            while not rospy.is_shutdown():
+                last_tf = self._tf_mon.get_last()
+                if last_tf is None:
+                    time.sleep(self._interval_sec)
+                    continue
+
+                # Don't query further ahead than (last_known_tf - lag).
+                t_safe = last_tf - lag_sec
+                if t_cur > t_safe:
+                    if self._tf_mon.has_stalled(stall_wall_sec=3.0):
+                        # Bag finished — drain remaining samples up to last known stamp.
+                        t_safe = last_tf
+                        if t_cur > t_safe:
+                            break
+                    else:
+                        time.sleep(self._interval_sec * 0.5)
+                        continue
+
+                stamp = rospy.Time.from_sec(t_cur)
+                t_export = map_tf_time_to_query_domain(t_cur, timebase)
+                try:
+                    if self._tf_buffer.can_transform(self._target, self._source, stamp, rospy.Duration(0.0)):
+                        tfm = self._tf_buffer.lookup_transform(
+                            self._target, self._source, stamp, rospy.Duration(0.0)
+                        )
+                        tr = tfm.transform.translation
+                        qr = tfm.transform.rotation
+                        writer.writerow([t_export, tr.x, tr.y, tr.z, qr.x, qr.y, qr.z, qr.w, "OK"])
+                        self.sample_count += 1
+                    else:
+                        writer.writerow([t_export, "", "", "", "", "", "", "", "NO_TF"])
+                        self.fail_count += 1
+                except Exception as exc:
+                    status = f"FAIL:{type(exc).__name__}"
+                    writer.writerow([t_export, "", "", "", "", "", "", "", status])
+                    self.fail_count += 1
+
+                if self.first_exported_timestamp_sec is None:
+                    self.first_exported_timestamp_sec = t_export
+                self.last_exported_timestamp_sec = t_export
+
+                if self.sample_count % 100 == 0:
+                    f.flush()
+
+                t_cur += self._interval_sec
+
+                # Exit once we are past the last observed TF stamp (bag finished).
+                if self._tf_mon.has_stalled(stall_wall_sec=3.0) and t_cur > (self._tf_mon.get_last() or 0.0):
+                    break
+
+            f.flush()
+
+        rospy.loginfo(
+            "[dense_traj] Wrote %d samples (%d failures) to %s; exported timestamps [%.9f, %.9f]",
+            self.sample_count,
+            self.fail_count,
+            self._out_path,
+            -1.0 if self.first_exported_timestamp_sec is None else self.first_exported_timestamp_sec,
+            -1.0 if self.last_exported_timestamp_sec is None else self.last_exported_timestamp_sec,
+        )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--camera-out-csv", required=True)
@@ -559,6 +719,8 @@ def main() -> int:
     ap.add_argument("--stall-wall-sec", type=float, default=2.0)
     ap.add_argument("--event-queue-size", type=int, default=2048)
     ap.add_argument("--camera-time-offset-sec", type=float, default=0.0)
+    ap.add_argument("--dense-traj-out-csv", default="")
+    ap.add_argument("--dense-traj-interval-sec", type=float, default=0.010)
     args = ap.parse_args()
 
     rospy.init_node("tf_sample_camera_gps", anonymous=True, disable_signals=True)
@@ -600,6 +762,22 @@ def main() -> int:
     if image_info is None and gps_info is None:
         print("No image or GPS topics could be detected.", file=sys.stderr)
         return 5
+
+    dense_sampler: Optional[DenseTrajectorySampler] = None
+    if args.dense_traj_out_csv:
+        dense_sampler = DenseTrajectorySampler(
+            out_path=Path(args.dense_traj_out_csv),
+            tf_buffer=tf_buffer,
+            tf_mon=tf_mon,
+            use_sim_time=use_sim_time,
+            clock_ev=clock_ev,
+            clock_mon=clock_mon,
+            wait_clock_wall_sec=args.wait_clock_wall_sec,
+            wait_tf_wall_sec=args.wait_tf_wall_sec,
+            target=args.target,
+            source=args.source,
+            interval_sec=args.dense_traj_interval_sec,
+        )
 
     image_exporter: Optional[ImageExportWriter] = None
     if args.image_output_dir:
@@ -657,6 +835,9 @@ def main() -> int:
     _ = image_sub, gps_sub
 
     counts = {"camera": 0, "gps": 0}
+
+    if dense_sampler is not None:
+        dense_sampler.start()
 
     try:
         with open(args.camera_out_csv, "w", newline="") as camera_f, open(args.gps_out_csv, "w", newline="") as gps_f:
@@ -823,6 +1004,8 @@ def main() -> int:
     finally:
         if image_exporter is not None:
             image_exporter.close()
+        if dense_sampler is not None:
+            dense_sampler.close()
 
     message = (
         f"Wrote camera samples to {args.camera_out_csv} ({counts['camera']} rows) and "
@@ -832,6 +1015,11 @@ def main() -> int:
         message += f" Saved {image_exporter.saved_count} JPG frames to {args.image_output_dir}."
         if image_exporter.dropped_count:
             message += f" Dropped {image_exporter.dropped_count} image frames due to a full save queue."
+    if dense_sampler is not None:
+        message += (
+            f" Dense trajectory: {dense_sampler.sample_count} samples"
+            f" ({dense_sampler.fail_count} failures) to {args.dense_traj_out_csv}."
+        )
     rospy.loginfo(message)
     return 0
 

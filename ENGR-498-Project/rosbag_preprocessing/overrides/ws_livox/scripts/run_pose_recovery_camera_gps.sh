@@ -294,6 +294,8 @@ mkdir -p "$LOG_DIR" "$PCD_OUT_DIR" "$IMAGE_OUT_DIR"
 CAMERA_OUT_CSV="$RUN_OUT_DIR/tf_camera_out.csv"
 GPS_OUT_CSV="$RUN_OUT_DIR/tf_gps_out.csv"
 IMAGE_TIMESTAMPS_CSV="$RUN_OUT_DIR/image_timestamps.csv"
+DENSE_TRAJ_CSV="$RUN_OUT_DIR/tf_dense_trajectory.csv"
+DENSE_TRAJ_INTERVAL_SEC="${DENSE_TRAJ_INTERVAL_SEC:-0.010}"
 FASTLIO_LOG="$LOG_DIR/fastlio.log"
 ROSBAG_LOG="$LOG_DIR/rosbag.log"
 SAMPLER_LOG="$LOG_DIR/sampler.log"
@@ -469,6 +471,8 @@ SAMPLER_CMD=(
   --image-timestamps-csv "$IMAGE_TIMESTAMPS_CSV"
   --discovery-timeout-wall-sec "$DISCOVERY_TIMEOUT_WALL_SEC"
   --camera-time-offset-sec "$CAMERA_TIME_OFFSET_SEC"
+  --dense-traj-out-csv "$DENSE_TRAJ_CSV"
+  --dense-traj-interval-sec "$DENSE_TRAJ_INTERVAL_SEC"
 )
 if [[ -n "$IMAGE_TOPIC" ]]; then
   SAMPLER_CMD+=(--image-topic "$IMAGE_TOPIC")
@@ -558,10 +562,12 @@ else
 fi
 
 python3 "$RUNTIME_HOME/ws_livox/scripts/sanitize_pose_recovery_outputs.py" \
-  --gps-csv "$GPS_OUT_CSV"
+  --gps-csv "$GPS_OUT_CSV" \
+  --dense-traj-csv "$DENSE_TRAJ_CSV"
 
-echo "[done] images dir:   $IMAGE_OUT_DIR"
-echo "[done] image csv:    $IMAGE_TIMESTAMPS_CSV"
-echo "[done] camera csv:  $CAMERA_OUT_CSV"
-echo "[done] gps csv:     $GPS_OUT_CSV"
-echo "[done] logs dir:    $LOG_DIR"
+echo "[done] images dir:        $IMAGE_OUT_DIR"
+echo "[done] image csv:         $IMAGE_TIMESTAMPS_CSV"
+echo "[done] camera csv:        $CAMERA_OUT_CSV"
+echo "[done] gps csv:           $GPS_OUT_CSV"
+echo "[done] dense traj csv:    $DENSE_TRAJ_CSV"
+echo "[done] logs dir:          $LOG_DIR"

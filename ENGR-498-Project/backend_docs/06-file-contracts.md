@@ -36,6 +36,35 @@ frame_000002.jpg,1771469608.456789,0.333333
 | `qx`,`qy`,`qz`,`qw` | float | Local-frame orientation quaternion |
 | `status` | string | Sampling status |
 
+### `tf_dense_trajectory.csv`
+
+Produced by `DenseTrajectorySampler` in `tf_sample_camera_gps.py`. One row per
+fixed-interval sample (default 10 ms) over the full bag duration. Used by
+`fuse_masks_to_slam.py` when time-offset mode is enabled.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `timestamp_sec` | float | Absolute unix/header/query-domain timestamp aligned with `image_timestamps.csv:t_query_sec` and `tf_camera_out.csv:t_query_sec` |
+| `x`,`y`,`z` | float | Local-frame translation (`camera_init <- body`) |
+| `qx`,`qy`,`qz`,`qw` | float | Local-frame orientation quaternion (XYZW order) |
+| `status` | string | `OK` for a valid lookup; `NO_TF`, or `FAIL:<reason>` otherwise |
+
+Only `OK` rows with a quaternion `norm_sq` in `[0.5, 2.0]` are accepted by
+`load_dense_trajectory()`. The sanitizer (`sanitize_pose_recovery_outputs.py`)
+drops non-OK and invalid rows, sorts by `timestamp_sec`, and deduplicates before
+the file is consumed by Fusion.
+
+Example:
+
+```csv
+timestamp_sec,x,y,z,qx,qy,qz,qw,status
+1771469600.000,0.0,0.0,0.0,0.0,0.0,0.0,1.0,OK
+1771469600.010,0.001,0.0,0.0,0.0,0.0,0.0,1.0,OK
+```
+
+**Note:** `timestamp_sec` is the primary column in this file (not `t_query_sec`)
+to distinguish it from the event-driven CSV files.
+
 ### `tf_gps_out.csv`
 
 | Column | Type | Meaning |
@@ -129,6 +158,11 @@ Minimal example:
 - Image stems must match across JPGs, masks, and metadata JSON.
 - Masks must stay aligned with the original image orientation.
 - `tf_camera_out.csv` and `image_timestamps.csv` must use the same time basis.
+- `tf_dense_trajectory.csv` must be from the same preprocessing run as
+  `tf_camera_out.csv`. Mixing runs produces silently misaligned poses.
+- `tf_dense_trajectory.csv` must be sanitized before use. The preprocessing
+  shell script calls the sanitizer automatically; manually-produced files must
+  be sanitized with `sanitize_pose_recovery_outputs.py --dense-traj-csv`.
 - The object JSON GPS fields are placeholders until georeferencing writes them.
 
 [Previous: GPS Georeferencing And Powerlines](05-georeferencing-and-powerlines.md) | [Back to index](README.md) | [Next: Developer Guide](07-developer-guide.md)

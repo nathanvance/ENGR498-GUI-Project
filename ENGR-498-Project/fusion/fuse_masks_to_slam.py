@@ -91,8 +91,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--time-column", default="t_query_sec")
     parser.add_argument("--image-filename-column", default="filename")
     parser.add_argument("--image-time-column", default="")
-    parser.add_argument("--time-offset-enabled", action="store_true")
     parser.add_argument("--time-offset-sec", type=float, default=0.0)
+    parser.add_argument(
+        "--time-offset-enabled",
+        action="store_true",
+        help="Deprecated compatibility flag. Interpolation is now selected automatically when --time-offset-sec is non-zero.",
+    )
+    parser.add_argument(
+        "--dense-traj-csv",
+        default="",
+        help="Path to tf_dense_trajectory.csv. Used when --time-offset-sec is non-zero.",
+    )
     parser.add_argument("--allowed-classes", default=",".join(DEFAULT_ALLOWED_CLASSES))
     parser.add_argument("--reject-classes", default=",".join(DEFAULT_REJECT_CLASSES))
     parser.add_argument("--min-vote-to-keep", type=int, default=1)
@@ -416,6 +425,238 @@ def interpolate_pose_record(
             "interp_alpha": alpha,
         },
     )
+
+
+@dataclass(frozen=True)
+class DenseTrajectory:
+    """Dense LiDAR pose trajectory sampled at a fixed interval (e.g. 10 ms).
+
+    Quaternions are globally sign-corrected on load so every consecutive pair
+    follows the short-arc convention, making local SLERP always unambiguous.
+    """
+
+    timestamps: np.ndarray   # shape (N,), float64, strictly monotonic increasing
+    translations: np.ndarray  # shape (N, 3), float64
+    quaternions: np.ndarray   # shape (N, 4), float64, xyzw, sign-corrected
+
+
+def _enforce_quaternion_sign_continuity(quaternions: np.ndarray) -> None:
+    """In-place: flip quaternion[i] if its dot with quaternion[i-1] is negative.
+
+    Ensures every consecutive pair is on the same hemisphere so SLERP always
+    interpolates along the short arc. O(N) scan, no allocations.
+    """
+    for i in range(1, len(quaternions)):
+        if float(np.dot(quaternions[i - 1], quaternions[i])) < 0.0:
+            quaternions[i] = -quaternions[i]
+
+
+def load_dense_trajectory(path: Path) -> DenseTrajectory:
+    """Load tf_dense_trajectory.csv and return a sign-corrected DenseTrajectory.
+
+    Only rows with status == 'OK' and finite, valid-norm quaternions are kept.
+    The result is sorted by timestamp; duplicate timestamps are deduplicated
+    (first occurrence wins, matching the sanitizer behaviour).
+
+    Raises ValueError if no valid rows can be loaded.
+    """
+    timestamps: list[float] = []
+    translations: list[list[float]] = []
+    quaternions: list[list[float]] = []
+
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            status = str(row.get("status", "")).strip().upper()
+            if status != "OK":
+                continue
+            try:
+                ts = float(row["timestamp_sec"])
+                x, y, z = float(row["x"]), float(row["y"]), float(row["z"])
+                qx, qy = float(row["qx"]), float(row["qy"])
+                qz, qw = float(row["qz"]), float(row["qw"])
+            except (KeyError, ValueError):
+                continue
+            if not all(map(lambda v: v == v and abs(v) != float("inf"), [ts, x, y, z, qx, qy, qz, qw])):
+                continue
+            norm_sq = qx * qx + qy * qy + qz * qz + qw * qw
+            if not (0.5 <= norm_sq <= 2.0):
+                continue
+            timestamps.append(ts)
+            translations.append([x, y, z])
+            quaternions.append([qx, qy, qz, qw])
+
+    if not timestamps:
+        raise ValueError(f"No valid poses were loaded from dense trajectory {path}")
+
+    # Sort by timestamp and deduplicate.
+    order = sorted(range(len(timestamps)), key=lambda i: timestamps[i])
+    ts_arr = np.empty(len(order), dtype=np.float64)
+    tr_arr = np.empty((len(order), 3), dtype=np.float64)
+    qt_arr = np.empty((len(order), 4), dtype=np.float64)
+
+    seen_ts: set[float] = set()
+    write_idx = 0
+    for i in order:
+        t = timestamps[i]
+        if t in seen_ts:
+            continue
+        seen_ts.add(t)
+        ts_arr[write_idx] = t
+        tr_arr[write_idx] = translations[i]
+        qt_arr[write_idx] = quaternions[i]
+        write_idx += 1
+
+    ts_arr = ts_arr[:write_idx]
+    tr_arr = tr_arr[:write_idx]
+    qt_arr = qt_arr[:write_idx]
+
+    # Normalize quaternions to unit length, then enforce sign continuity.
+    norms = np.linalg.norm(qt_arr, axis=1, keepdims=True)
+    norms = np.where(norms > 0, norms, 1.0)
+    qt_arr /= norms
+    _enforce_quaternion_sign_continuity(qt_arr)
+
+    return DenseTrajectory(timestamps=ts_arr, translations=tr_arr, quaternions=qt_arr)
+
+
+def validate_dense_trajectory_time_range(
+    traj: DenseTrajectory,
+    frame_times: np.ndarray,
+    *,
+    dense_path: Path,
+) -> None:
+    """Require dense trajectory timestamps to overlap the shifted image timestamps."""
+    if traj.timestamps.size == 0 or frame_times.size == 0:
+        return
+
+    dense_start = float(traj.timestamps[0])
+    dense_end = float(traj.timestamps[-1])
+    frame_start = float(np.min(frame_times))
+    frame_end = float(np.max(frame_times))
+
+    if max(dense_start, frame_start) <= min(dense_end, frame_end):
+        return
+
+    dense_is_unix = dense_start > 1e9 and dense_end > 1e9
+    frame_is_unix = frame_start > 1e9 and frame_end > 1e9
+    if dense_is_unix != frame_is_unix:
+        raise ValueError(
+            "Dense trajectory timestamps do not match the image timestamp domain. "
+            f"dense=[{dense_start:.6f}, {dense_end:.6f}] frame=[{frame_start:.6f}, {frame_end:.6f}] "
+            f"path={dense_path}. Regenerate pose recovery outputs with the fixed dense /tf sampler."
+        )
+
+    raise ValueError(
+        "Dense trajectory timestamps do not overlap the shifted frame timestamps. "
+        f"dense=[{dense_start:.6f}, {dense_end:.6f}] frame=[{frame_start:.6f}, {frame_end:.6f}] "
+        f"path={dense_path}. Check --time-offset-sec and regenerate pose recovery outputs if needed."
+    )
+
+
+def query_dense_trajectory(
+    traj: DenseTrajectory,
+    t_query: float,
+) -> tuple["PoseRecord | None", dict[str, Any]]:
+    """Evaluate the dense trajectory at an arbitrary time using local linear+SLERP interpolation.
+
+    Sign continuity was enforced at load time, so SLERP always follows the short arc.
+
+    Returns (PoseRecord, diagnostics_dict) or (None, {"drop_reason": ...}) when the
+    query time is outside the trajectory bounds or the trajectory is empty.
+    The diagnostics dict uses the same keys as interpolate_pose_record so downstream
+    JSON outputs are schema-compatible.
+    """
+    n = traj.timestamps.size
+    if n == 0:
+        return None, {"drop_reason": "dense_trajectory_empty"}
+
+    t0 = float(traj.timestamps[0])
+    t_last = float(traj.timestamps[-1])
+
+    if t_query < t0:
+        return None, {
+            "drop_reason": "effective_time_out_of_range",
+            "detail": f"t_query={t_query:.6f} < traj_start={t0:.6f}",
+        }
+    if t_query > t_last:
+        return None, {
+            "drop_reason": "effective_time_out_of_range",
+            "detail": f"t_query={t_query:.6f} > traj_end={t_last:.6f}",
+        }
+
+    right = int(np.searchsorted(traj.timestamps, t_query, side="left"))
+
+    if right <= 0:
+        # Exactly at or before first sample.
+        pose = PoseRecord(
+            timestamp=float(traj.timestamps[0]),
+            translation=traj.translations[0].copy(),
+            quaternion_xyzw=traj.quaternions[0].copy(),
+            raw={"interpolated": False, "dense": True},
+        )
+        return pose, {
+            "match_mode": "dense_interpolated",
+            "pose_index_lo": 0,
+            "pose_index_hi": 0,
+            "pose_time_lo": float(traj.timestamps[0]),
+            "pose_time_hi": float(traj.timestamps[0]),
+            "interp_alpha": 0.0,
+        }
+
+    if right >= n:
+        # Exactly at last sample.
+        pose = PoseRecord(
+            timestamp=float(traj.timestamps[-1]),
+            translation=traj.translations[-1].copy(),
+            quaternion_xyzw=traj.quaternions[-1].copy(),
+            raw={"interpolated": False, "dense": True},
+        )
+        return pose, {
+            "match_mode": "dense_interpolated",
+            "pose_index_lo": n - 1,
+            "pose_index_hi": n - 1,
+            "pose_time_lo": float(traj.timestamps[-1]),
+            "pose_time_hi": float(traj.timestamps[-1]),
+            "interp_alpha": 0.0,
+        }
+
+    left = right - 1
+    tlo = float(traj.timestamps[left])
+    thi = float(traj.timestamps[right])
+
+    if thi <= tlo:
+        # Degenerate bracket (should not happen after sanitization).
+        return None, {"drop_reason": "invalid_dense_bracket", "pose_index_lo": left, "pose_index_hi": right}
+
+    alpha = float((t_query - tlo) / (thi - tlo))
+    alpha = max(0.0, min(1.0, alpha))
+
+    translation = (1.0 - alpha) * traj.translations[left] + alpha * traj.translations[right]
+    quaternion = _slerp_quaternion_xyzw(traj.quaternions[left], traj.quaternions[right], alpha)
+
+    pose = PoseRecord(
+        timestamp=float(t_query),
+        translation=translation.astype(np.float64),
+        quaternion_xyzw=quaternion.astype(np.float64),
+        raw={
+            "interpolated": True,
+            "dense": True,
+            "t0": tlo,
+            "t1": thi,
+            "alpha": alpha,
+            "pose_index_lo": left,
+            "pose_index_hi": right,
+        },
+    )
+    return pose, {
+        "match_mode": "dense_interpolated",
+        "pose_index_lo": left,
+        "pose_index_hi": right,
+        "pose_time_lo": tlo,
+        "pose_time_hi": thi,
+        "interp_alpha": alpha,
+    }
 
 
 def sanitize_masks(mask_array: np.ndarray) -> np.ndarray:
@@ -989,16 +1230,45 @@ def main() -> int:
     frames = build_frame_records(Path(args.mask_dir), Path(args.meta_dir), image_timestamps)
 
     pose_times = np.asarray([pose.timestamp for pose in poses], dtype=np.float64)
-    if args.time_offset_enabled:
-        frame_times = np.asarray([frame.timestamp + args.time_offset_sec for frame in frames], dtype=np.float64)
+
+    use_time_offset_interpolation = abs(float(args.time_offset_sec)) > 1e-12
+
+    frame_times = (
+        np.asarray([frame.timestamp + args.time_offset_sec for frame in frames], dtype=np.float64)
+        if use_time_offset_interpolation
+        else np.asarray([frame.timestamp for frame in frames], dtype=np.float64)
+    )
+
+    # Load the dense trajectory when a non-zero time offset requires interpolation.
+    dense_traj: DenseTrajectory | None = None
+    if use_time_offset_interpolation and args.dense_traj_csv:
+        dense_traj_path = Path(args.dense_traj_csv)
+        if dense_traj_path.is_file():
+            try:
+                dense_traj = load_dense_trajectory(dense_traj_path)
+                validate_dense_trajectory_time_range(dense_traj, frame_times, dense_path=dense_traj_path)
+                print(
+                    f"[info] Loaded dense trajectory: {dense_traj.timestamps.size} samples "
+                    f"spanning [{dense_traj.timestamps[0]:.3f}, {dense_traj.timestamps[-1]:.3f}] s "
+                    f"from {dense_traj_path.name}"
+                )
+            except Exception as exc:
+                print(f"[warn] Failed to load dense trajectory ({exc}); falling back to sparse interpolation.")
+        else:
+            print(f"[warn] Dense trajectory file not found: {dense_traj_path}; falling back to sparse interpolation.")
+
+    if use_time_offset_interpolation:
         frame_pose_records: list[PoseRecord | None] = []
         frame_match_details: list[dict[str, Any]] = []
         for frame_index, frame in enumerate(frames):
-            pose_record, details = interpolate_pose_record(poses, pose_times, float(frame_times[frame_index]))
+            t_eff = float(frame_times[frame_index])
+            if dense_traj is not None:
+                pose_record, details = query_dense_trajectory(dense_traj, t_eff)
+            else:
+                pose_record, details = interpolate_pose_record(poses, pose_times, t_eff)
             frame_pose_records.append(pose_record)
             frame_match_details.append(details)
     else:
-        frame_times = np.asarray([frame.timestamp for frame in frames], dtype=np.float64)
         pose_matches = match_nearest_pose_indices(frame_times, pose_times)
         frame_pose_records = [poses[int(index)] for index in pose_matches]
         frame_match_details = [
@@ -1335,7 +1605,7 @@ def main() -> int:
         },
         "settings": {
             "time_column": args.time_column,
-            "time_offset_enabled": bool(args.time_offset_enabled),
+            "time_offset_enabled": bool(use_time_offset_interpolation),
             "time_offset_sec": args.time_offset_sec,
             "allowed_classes": list(allowed_classes),
             "reject_classes": list(reject_classes),

@@ -28,7 +28,8 @@ It lives in:
 | `compose.yaml` | Service definition, GPU/WSLg mounts, output mounts |
 | `scripts/sync_wsl_context.sh` | Stages WSL runtime artifacts into the build context |
 | `overrides/ws_livox/scripts/run_pose_recovery_camera_gps.sh` | End-to-end pose recovery workflow |
-| `overrides/ws_livox/scripts/tf_sample_camera_gps.py` | Event-driven TF/image/GPS sampler |
+| `overrides/ws_livox/scripts/tf_sample_camera_gps.py` | Event-driven TF/image/GPS sampler **and** dense trajectory sampler |
+| `overrides/ws_livox/scripts/sanitize_pose_recovery_outputs.py` | Post-run sanitization for GPS and dense trajectory CSVs |
 
 ## Calibration Branch
 
@@ -62,6 +63,7 @@ The pose recovery branch is used for backend processing runs that feed Fusion.
 - `image_timestamps.csv`
 - `tf_camera_out.csv`
 - `tf_gps_out.csv`
+- `tf_dense_trajectory.csv`
 - `pcd/scans.pcd`
 - run logs
 
@@ -73,47 +75,85 @@ The pose recovery branch is used for backend processing runs that feed Fusion.
 4. Start a clean ROS master.
 5. Enable simulated time.
 6. Start FAST-LIO.
-7. Start `tf_sample_camera_gps.py`.
+7. Start `tf_sample_camera_gps.py` (launches both the event sampler and the dense trajectory sampler).
 8. Replay the bag paused, then auto-unpause.
 9. Wait for sampling to finish.
 10. Copy the final FAST-LIO PCD into the run directory.
+11. Run `sanitize_pose_recovery_outputs.py` on both `tf_gps_out.csv` and `tf_dense_trajectory.csv`.
 
 ## TF / Image / GPS Sampling Model
 
-`tf_sample_camera_gps.py` is event-driven, not timer-driven.
+`tf_sample_camera_gps.py` now runs **two sampling paths in parallel**:
 
-It samples `/tf`:
+### Event-driven path (unchanged)
 
-- when an image message arrives,
-- when a GPS message arrives.
+Samples `/tf` at the moment each image or GPS message arrives. This is the original
+design. It produces:
 
-That is a key design choice. It means downstream stages receive pose samples at
-the exact times they need rather than at an arbitrary fixed rate.
+- `tf_camera_out.csv` — one row per camera frame
+- `tf_gps_out.csv` — one row per GPS fix (with GPS coordinates appended)
+
+These files are used by:
+- `fuse_masks_to_slam.py` when time-offset is disabled (nearest-pose matching)
+- `georeference_from_tf_gps.py` for GPS alignment (always uses `tf_gps_out.csv`)
+
+### Dense trajectory path (new)
+
+`DenseTrajectorySampler` runs in a background daemon thread. It is **timer-driven**,
+not event-driven. It samples `/tf` every 10 ms (default) from the first TF stamp
+through to the end of the bag. This produces:
+
+- `tf_dense_trajectory.csv` — one row per 10 ms interval over the full bag
+
+This file is used by `fuse_masks_to_slam.py` when time-offset is **enabled** and
+the file is present. It allows accurate interpolation at arbitrary shifted
+timestamps because the dense grid captures `tf2_ros`'s own internal inter-message
+interpolation and stores it compactly.
+
+`timestamp_sec` is exported in the same unix/header time domain used by
+`image_timestamps.csv:t_query_sec` and `tf_camera_out.csv:t_query_sec`. TF
+lookups still happen in raw TF time internally; only the exported dense CSV
+timestamps are converted.
+
+The sampling lag (staying slightly behind the bag clock) prevents `ExtrapolationException`
+by ensuring each queried timestamp is already in the `tf2_ros` buffer.
+
+After sampling, `sanitize_pose_recovery_outputs.py` cleans the dense CSV:
+- removes non-OK rows (lookup failures, extrapolations)
+- removes rows with invalid quaternion norm
+- sorts by timestamp and deduplicates
 
 ### Important classes
 
-- `ClockMonitor`
-- `TFStampMonitor`
-- `ImageExportWriter`
-- `TimebaseState`
+| Class | Role |
+| --- | --- |
+| `ClockMonitor` | Tracks `/clock` messages for sim-time synchronization |
+| `TFStampMonitor` | Tracks first/last `/tf` stamp; used by both sampling paths |
+| `ImageExportWriter` | Async JPEG export thread |
+| `TimebaseState` | Decides whether sim-time or TF-stamp is used as the time reference |
+| `DenseTrajectorySampler` | Background thread that produces `tf_dense_trajectory.csv` |
 
 ### Output conventions
 
-- image filenames are sequential:
-  - `frame_000001.jpg`
-  - `frame_000002.jpg`
+- image filenames are sequential: `frame_000001.jpg`, `frame_000002.jpg`, ...
 - timestamps are written to `image_timestamps.csv`
-- pose rows use XYZW quaternion order
+- all pose CSVs use XYZW quaternion order
+- `tf_dense_trajectory.csv` uses `timestamp_sec` (not `t_query_sec`) as its
+  primary column to distinguish it from the event-driven files, while staying in
+  the same unix/header time domain as the event-driven `t_query_sec` fields
 
 ## Why This Stage Matters
 
 Everything downstream depends on these outputs:
 
 - inference consumes `images/`
-- fusion consumes:
+- fusion (no-offset mode) consumes:
   - `image_timestamps.csv`
   - `tf_camera_out.csv`
   - `pcd/scans.pcd`
+- fusion (time-offset mode) additionally consumes:
+  - `tf_dense_trajectory.csv` (preferred)
+  - or `tf_camera_out.csv` as sparse interpolation fallback
 - georeferencing consumes `tf_gps_out.csv`
 
 If this stage is wrong, every later stage is misaligned.

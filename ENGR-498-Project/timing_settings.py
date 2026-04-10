@@ -10,9 +10,6 @@ from project_paths import PROJECT_ROOT
 
 DEFAULT_TIMING_SETTINGS = {
     "timing": {
-        "preprocess_camera_offset_enabled": False,
-        "preprocess_camera_offset_sec": 0.0,
-        "fusion_time_offset_enabled": False,
         "fusion_time_offset_sec": 0.0,
     }
 }
@@ -59,21 +56,8 @@ def resolve_effective_timing(metadata: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(overrides, dict):
         overrides = {}
     effective = {
-        "preprocess_camera_offset_enabled": bool(global_cfg.get("preprocess_camera_offset_enabled", False)),
-        "preprocess_camera_offset_sec": float(global_cfg.get("preprocess_camera_offset_sec", 0.0)),
-        "fusion_time_offset_enabled": bool(global_cfg.get("fusion_time_offset_enabled", False)),
         "fusion_time_offset_sec": float(global_cfg.get("fusion_time_offset_sec", 0.0)),
     }
-    for key in (
-        "preprocess_camera_offset_enabled",
-        "preprocess_camera_offset_sec",
-        "fusion_time_offset_enabled",
-        "fusion_time_offset_sec",
-    ):
-        if key in overrides:
-            if key.endswith("_enabled"):
-                effective[key] = bool(overrides.get(key))
-            else:
-                effective[key] = float(overrides.get(key) or 0.0)
+    if "fusion_time_offset_sec" in overrides:
+        effective["fusion_time_offset_sec"] = float(overrides.get("fusion_time_offset_sec") or 0.0)
     return effective
-

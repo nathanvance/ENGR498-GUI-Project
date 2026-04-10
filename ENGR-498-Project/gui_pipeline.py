@@ -256,14 +256,8 @@ class BackendPipelineThread(QThread):
             raise RuntimeError(f"Command failed with exit code {return_code}: {' '.join(command)}")
 
     def _run_pose_recovery(self, scan_dir: Path, metadata: dict) -> Path:
-        pose_cfg = metadata.get("config", {}).get("pose_recovery", {})
         effective_timing = resolve_effective_timing(metadata)
-        preprocess_offset_enabled = bool(effective_timing.get("preprocess_camera_offset_enabled", False))
-        preprocess_offset_sec = (
-            float(effective_timing.get("preprocess_camera_offset_sec", 0.0))
-            if preprocess_offset_enabled
-            else 0.0
-        )
+        pose_cfg = metadata.get("config", {}).get("pose_recovery", {})
         files = metadata["files"]
         bag_path = resolve_scan_path(scan_dir, files.get("rosbag"))
         if bag_path is None or not bag_path.is_file():
@@ -285,17 +279,20 @@ class BackendPipelineThread(QThread):
         ]
         if pose_cfg.get("enable_rviz"):
             command.append("--rviz")
-        command.extend(["--camera-time-offset-sec", str(preprocess_offset_sec)])
-        self.emit_log(
-            "[timing] pose-recovery camera offset "
-            f"{'enabled' if preprocess_offset_enabled else 'disabled'} "
-            f"(effective={preprocess_offset_sec:.6f} sec)"
-        )
+        self.emit_log("[timing] pose-recovery uses unshifted camera timestamps; fusion owns timing offset handling.")
         self.run_command(command)
 
         latest_run = newest_directory(output_root)
         if latest_run is None:
             raise FileNotFoundError(f"Rosbag preprocessing did not create an output run in {output_root}")
+
+        dense_traj_path = latest_run / "tf_dense_trajectory.csv"
+        if not dense_traj_path.is_file():
+            raise FileNotFoundError(
+                "Rosbag preprocessing completed without producing tf_dense_trajectory.csv. "
+                "The portable ROS runtime is likely outdated; rebuild the rosbag_preprocessing "
+                "container image so it includes the dense /tf sampler."
+            )
 
         update_file_entry(metadata, scan_dir, "pose_recovery_root", output_root)
         update_file_entry(metadata, scan_dir, "latest_pose_recovery_run", latest_run)
@@ -303,30 +300,19 @@ class BackendPipelineThread(QThread):
         update_file_entry(metadata, scan_dir, "image_timestamps_csv", latest_run / "image_timestamps.csv")
         update_file_entry(metadata, scan_dir, "tf_camera_csv", latest_run / "tf_camera_out.csv")
         update_file_entry(metadata, scan_dir, "tf_gps_csv", latest_run / "tf_gps_out.csv")
+        update_file_entry(metadata, scan_dir, "tf_dense_traj_csv", dense_traj_path)
 
         timing_config_path = latest_run / "timing_config.json"
         timing_config_path.write_text(
             json.dumps(
                 {
                     "timing": effective_timing,
-                    "effective": {
-                        "preprocess_camera_offset_sec": preprocess_offset_sec,
-                    },
+                    "effective": effective_timing,
                 },
                 indent=2,
             ),
             encoding="utf-8",
         )
-
-        pose_cfg_store = metadata.setdefault("config", {}).setdefault("pose_recovery", {})
-        prev_applied = float(pose_cfg_store.get("last_camera_time_offset_sec", 0.0))
-        prev_enabled = bool(pose_cfg_store.get("last_camera_time_offset_enabled", False))
-        if prev_enabled != preprocess_offset_enabled or abs(prev_applied - preprocess_offset_sec) > 1e-12:
-            update_status(metadata, "inference", "pending")
-            update_status(metadata, "fusion", "pending")
-            self.emit_log("[timing] preprocessing camera offset changed; marked inference and fusion as pending.")
-        pose_cfg_store["last_camera_time_offset_sec"] = preprocess_offset_sec
-        pose_cfg_store["last_camera_time_offset_enabled"] = preprocess_offset_enabled
 
         # Copy the raw SLAM PCD into processed/point_clouds/raw/ and generate a LAS
         # conversion alongside it. The pose_recovery output stays untouched as
@@ -353,6 +339,7 @@ class BackendPipelineThread(QThread):
         self.emit_log(f"[outputs] image folder: {latest_run / 'images'}")
         self.emit_log(f"[outputs] camera poses: {latest_run / 'tf_camera_out.csv'}")
         self.emit_log(f"[outputs] gps poses: {latest_run / 'tf_gps_out.csv'}")
+        self.emit_log(f"[outputs] dense trajectory: {dense_traj_path}")
         return latest_run
 
     def _resolve_wire_input_las(self, scan_dir: Path, metadata: dict) -> Path:
@@ -554,19 +541,13 @@ class BackendPipelineThread(QThread):
         config = metadata.get("config", {})
         fusion_cfg = config.get("fusion", {})
         effective_timing = resolve_effective_timing(metadata)
-        fusion_offset_enabled = bool(effective_timing.get("fusion_time_offset_enabled", False))
-        fusion_offset_sec = (
-            float(effective_timing.get("fusion_time_offset_sec", 0.0))
-            if fusion_offset_enabled
-            else 0.0
-        )
+        fusion_offset_sec = float(effective_timing.get("fusion_time_offset_sec", 0.0))
+        use_fusion_interpolation = abs(fusion_offset_sec) > 1e-12
         self.emit_log(
             "[timing] fusion offset "
-            f"{'enabled' if fusion_offset_enabled else 'disabled'} "
-            f"(effective={fusion_offset_sec:.6f} sec)"
+            f"{fusion_offset_sec:.6f} sec "
+            f"({'interpolated dense/sparse pose lookup' if use_fusion_interpolation else 'nearest camera-pose matching'})"
         )
-        if bool(effective_timing.get("preprocess_camera_offset_enabled", False)) and fusion_offset_enabled:
-            self.emit_log("[timing] both preprocessing and fusion offsets are enabled for this run.")
 
         masks_dir = resolve_scan_path(scan_dir, metadata.get("files", {}).get("masks_dir"))
         meta_dir = resolve_scan_path(scan_dir, metadata.get("files", {}).get("meta_dir"))
@@ -617,8 +598,20 @@ class BackendPipelineThread(QThread):
             str(fusion_offset_sec),
             "--no-visualize",
         ]
-        if fusion_offset_enabled:
-            fusion_command.append("--time-offset-enabled")
+        dense_traj_path = resolve_scan_path(
+            scan_dir, metadata.get("files", {}).get("tf_dense_traj_csv")
+        )
+        if dense_traj_path is None and pose_run is not None:
+            # Fallback: look directly in the pose recovery run directory.
+            candidate = pose_run / "tf_dense_trajectory.csv"
+            if candidate.is_file():
+                dense_traj_path = candidate
+        if dense_traj_path is not None and dense_traj_path.is_file():
+            fusion_command.extend(["--dense-traj-csv", str(dense_traj_path)])
+            if use_fusion_interpolation:
+                self.emit_log(f"[timing] dense trajectory: {dense_traj_path}")
+        elif use_fusion_interpolation:
+            self.emit_log("[timing] dense trajectory not found; using sparse interpolation fallback.")
         self.run_command(fusion_command)
 
         update_file_entry(metadata, scan_dir, "fused_objects", fusion_output_dir / "fused_objects.json")

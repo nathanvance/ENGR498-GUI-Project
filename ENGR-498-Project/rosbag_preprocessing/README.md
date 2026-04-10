@@ -356,10 +356,19 @@ outputs/pose_recovery/<bag_stem>_<timestamp_pid>/
     frame_000002.jpg
   tf_camera_out.csv
   tf_gps_out.csv
+  tf_dense_trajectory.csv
   pcd/
     scans.pcd
   logs/
 ```
+
+`tf_dense_trajectory.csv` — dense LiDAR pose trajectory sampled from `/tf` every 10 ms
+over the full bag duration (configurable via `DENSE_TRAJ_INTERVAL_SEC` env var).
+Schema: `timestamp_sec, x, y, z, qx, qy, qz, qw, status`.
+`timestamp_sec` is exported in the same unix/header time domain as
+`image_timestamps.csv:t_query_sec` and `tf_camera_out.csv:t_query_sec`.
+Used by the Fusion stage when `fusion_time_offset_enabled` is on, giving robust
+continuous-time interpolation instead of nearest-pose matching.
 
 Typical calibration output:
 
@@ -423,10 +432,12 @@ From this folder:
 python .\launcher\run_transform_reading_workflow.py <bag_path> --image-topic /camera/image/compressed --gps-topic /fix
 ```
 
-This workflow writes the key downstream handoff file:
+This workflow writes several downstream handoff files:
 
 ```text
+outputs/pose_recovery/<run_name>/tf_camera_out.csv
 outputs/pose_recovery/<run_name>/tf_gps_out.csv
+outputs/pose_recovery/<run_name>/tf_dense_trajectory.csv
 ```
 
 When the integrated GUI launches rosbag preprocessing for a scan, the output root is
@@ -439,7 +450,13 @@ ENGR-498-Project/assets/<scan_name>/processed/pose_recovery/
 That per-scan output root is what the downstream GUI-launched wire extraction
 and Fusion stages consume.
 
-That CSV is the direct input expected by the Fusion georeferencing stage.
+`tf_gps_out.csv` is the direct input expected by the Fusion georeferencing stage.
+
+`tf_camera_out.csv` is the sparse event-driven camera pose CSV used by Fusion
+when the fusion time offset is disabled.
+
+`tf_dense_trajectory.csv` is used by Fusion when the fusion time offset is enabled.
+See **Dense LiDAR trajectory** below for details.
 
 It also saves every camera message received on the detected or overridden image
 topic as a `.jpg` file in:
@@ -459,6 +476,61 @@ Those two outputs are the direct inputs expected by:
 ```text
 ENGR-498-Project/fusion/run_yolo_inference.py
 ```
+
+### Dense LiDAR trajectory
+
+`tf_dense_trajectory.csv` is produced alongside the event-driven outputs by a
+second sampling thread (`DenseTrajectorySampler`) that runs inside
+`tf_sample_camera_gps.py`. Unlike the event-driven CSVs, which record poses only
+when a camera or GPS message arrives, the dense trajectory samples `/tf` at a fixed
+interval (default 10 ms) over the full bag duration.
+
+**Why this is needed:**
+When the fusion time offset is enabled, Fusion shifts each camera frame's effective
+timestamp by a configurable number of seconds before looking up a LiDAR pose. If that
+lookup has to interpolate against the sparse camera-event trajectory (which may have
+gaps of several seconds between consecutive pose samples), the interpolated result is
+inaccurate because a lot of robot motion can occur in those gaps. The dense trajectory
+closes that gap: with 10 ms spacing, the `tf2_ros` buffer's internal inter-message
+interpolation is captured densely enough that a further local SLERP/lerp in Fusion is
+geometrically correct even for large time-offset values.
+
+**How the sampling works:**
+1. The `DenseTrajectorySampler` thread waits for the first `/tf` stamp to appear
+   (same synchronization point the event sampler uses).
+2. It starts at that first timestamp and advances by `interval_sec` per step.
+3. It queries `tf2_ros.Buffer.lookup_transform` for the `camera_init` ← `body`
+   transform at each step, staying slightly behind the live bag clock to avoid
+   `ExtrapolationException` on future timestamps.
+4. Successful lookups are written as `OK` rows. Failed lookups are written with
+   a status code (`NO_TF`, `FAIL:...`) and are filtered out by the sanitizer and
+   by the Fusion loader.
+5. The thread exits when the TF monitor reports the bag has stalled.
+
+**Post-processing:**
+After the sampler finishes, `sanitize_pose_recovery_outputs.py` is called with
+`--dense-traj-csv`. It drops non-`OK` rows, drops rows with invalid quaternion norm,
+sorts by `timestamp_sec`, and deduplicates. The sanitized file is what Fusion reads.
+
+**Schema:** `timestamp_sec, x, y, z, qx, qy, qz, qw, status`
+
+**Configuring the interval:**
+Set the `DENSE_TRAJ_INTERVAL_SEC` environment variable before running the workflow
+to override the default 10 ms. For example:
+
+```bash
+DENSE_TRAJ_INTERVAL_SEC=0.020 python .\launcher\run_transform_reading_workflow.py ...
+```
+
+Finer intervals produce larger files and more accurate interpolation. The practical
+floor is limited by the underlying FAST-LIO TF publication rate (~10 Hz for a
+Livox Horizon), below which the `tf2_ros` buffer itself interpolates.
+
+**Backward compatibility:**
+`tf_camera_out.csv` and `tf_gps_out.csv` are unaffected. The dense trajectory is
+purely additive. If this file is absent (e.g., on outputs from a previous run before
+this feature was added), Fusion automatically falls back to the old sparse
+interpolation behavior and logs a warning.
 
 
 ## Compose Notes
