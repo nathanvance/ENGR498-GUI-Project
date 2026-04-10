@@ -453,10 +453,12 @@ class BackendPipelineThread(QThread):
             return
 
         config = metadata.get("config", {})
+        effective_timing = resolve_effective_timing(metadata)
         gps_cfg = config.get("gps", {})
         allow_missing_gps, gps_mode_source = self._gps_optional_enabled(metadata)
         min_fix_status = int(gps_cfg.get("min_fix_status", 0))
         max_horizontal_cov_m2 = float(gps_cfg.get("max_horizontal_cov_m2", 1000.0))
+        gps_time_offset_sec = float(effective_timing.get("gps_time_offset_sec", 0.0))
         usable_rows = 0
         if tf_gps_path is not None and tf_gps_path.is_file():
             usable_rows = count_usable_tf_gps_rows(
@@ -486,6 +488,7 @@ class BackendPipelineThread(QThread):
 
         gps_output_dir = scan_dir / "processed" / "fusion" / "gps"
         gps_output_dir.mkdir(parents=True, exist_ok=True)
+        dense_traj_path = resolve_scan_path(scan_dir, metadata.get("files", {}).get("tf_dense_traj_csv"))
         georef_command = [
             sys.executable,
             str(RUN_GEOREF_SCRIPT),
@@ -497,7 +500,24 @@ class BackendPipelineThread(QThread):
             str(config.get("gps", {}).get("offset_body_xyz_m", "0,0,0")),
             "--max-horizontal-cov-m2",
             str(max_horizontal_cov_m2),
+            "--gps-time-offset-sec",
+            str(gps_time_offset_sec),
         ]
+        if dense_traj_path is not None and dense_traj_path.is_file():
+            georef_command.extend(["--dense-traj-csv", str(dense_traj_path)])
+        if abs(gps_time_offset_sec) > 1e-12 and dense_traj_path is not None and dense_traj_path.is_file():
+            self.emit_log(
+                "[timing] georeference GPS offset "
+                f"{gps_time_offset_sec:.6f} sec (dense trajectory translation compensation)"
+            )
+        elif abs(gps_time_offset_sec) > 1e-12:
+            self.emit_log(
+                "[timing] georeference GPS offset "
+                f"{gps_time_offset_sec:.6f} sec requested, but dense trajectory CSV is unavailable; "
+                "falling back to original tf_gps local translations."
+            )
+        else:
+            self.emit_log("[timing] georeference GPS offset 0.000000 sec (disabled)")
         if objects_json is not None and objects_json.is_file():
             georef_command.extend(["--objects-json", str(objects_json)])
         if powerline_overlay is not None and powerline_overlay.is_file():

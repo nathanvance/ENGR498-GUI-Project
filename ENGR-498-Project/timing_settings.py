@@ -11,6 +11,7 @@ from project_paths import PROJECT_ROOT
 DEFAULT_GUI_SETTINGS = {
     "timing": {
         "fusion_time_offset_sec": 0.0,
+        "gps_time_offset_sec": 0.0,
     },
     "fusion": {
         "visualize": False,
@@ -74,9 +75,12 @@ def resolve_effective_timing(metadata: dict[str, Any]) -> dict[str, Any]:
         overrides = {}
     effective = {
         "fusion_time_offset_sec": float(global_cfg.get("fusion_time_offset_sec", 0.0)),
+        "gps_time_offset_sec": float(global_cfg.get("gps_time_offset_sec", 0.0)),
     }
     if "fusion_time_offset_sec" in overrides:
         effective["fusion_time_offset_sec"] = float(overrides.get("fusion_time_offset_sec") or 0.0)
+    if "gps_time_offset_sec" in overrides:
+        effective["gps_time_offset_sec"] = float(overrides.get("gps_time_offset_sec") or 0.0)
     return effective
 
 

@@ -58,6 +58,12 @@ class AlignmentResult:
     rmse_z_m: float
 
 
+@dataclass(frozen=True)
+class DenseTranslationTrajectory:
+    timestamps: np.ndarray
+    translations: np.ndarray
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -79,6 +85,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-horizontal-cov-m2", type=float, default=1000.0)
     parser.add_argument("--outlier-threshold-m", type=float, default=5.0)
     parser.add_argument("--allow-scale", action="store_true")
+    parser.add_argument("--gps-time-offset-sec", type=float, default=0.0)
+    parser.add_argument("--dense-traj-csv", default="")
     parser.add_argument("--native-mode", choices=("auto", "on", "off"), default="auto")
     return parser.parse_args()
 
@@ -167,6 +175,65 @@ def load_tf_gps_records(path: Path) -> list[GpsPoseRecord]:
     if not records:
         raise ValueError(f"No valid GPS/TF samples loaded from {path}")
     return records
+
+
+def load_dense_translation_trajectory(path: Path) -> DenseTranslationTrajectory:
+    timestamps: list[float] = []
+    translations: list[list[float]] = []
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            status = str(row.get("status", "")).strip().upper()
+            if status != "OK":
+                continue
+            try:
+                timestamp = float(row["timestamp_sec"])
+                x = float(row["x"])
+                y = float(row["y"])
+                z = float(row["z"])
+            except (KeyError, ValueError):
+                continue
+            if not all(math.isfinite(value) for value in (timestamp, x, y, z)):
+                continue
+            timestamps.append(timestamp)
+            translations.append([x, y, z])
+    if not timestamps:
+        raise ValueError(f"No valid dense trajectory samples loaded from {path}")
+
+    order = np.argsort(np.asarray(timestamps, dtype=np.float64), kind="stable")
+    ts_sorted = np.asarray([timestamps[int(index)] for index in order], dtype=np.float64)
+    tr_sorted = np.asarray([translations[int(index)] for index in order], dtype=np.float64)
+    unique_mask = np.ones(ts_sorted.shape[0], dtype=bool)
+    unique_mask[1:] = ts_sorted[1:] != ts_sorted[:-1]
+    return DenseTranslationTrajectory(
+        timestamps=ts_sorted[unique_mask],
+        translations=tr_sorted[unique_mask],
+    )
+
+
+def interpolate_dense_translation(
+    traj: DenseTranslationTrajectory,
+    t_query_sec: float,
+) -> np.ndarray | None:
+    if traj.timestamps.size == 0:
+        return None
+    if t_query_sec < float(traj.timestamps[0]) or t_query_sec > float(traj.timestamps[-1]):
+        return None
+
+    right = int(np.searchsorted(traj.timestamps, t_query_sec, side="left"))
+    if right <= 0:
+        return traj.translations[0].copy()
+    if right >= traj.timestamps.size:
+        return traj.translations[-1].copy()
+
+    left = right - 1
+    t0 = float(traj.timestamps[left])
+    t1 = float(traj.timestamps[right])
+    if t1 <= t0:
+        return None
+    alpha = float((t_query_sec - t0) / (t1 - t0))
+    alpha = max(0.0, min(1.0, alpha))
+    return ((1.0 - alpha) * traj.translations[left] + alpha * traj.translations[right]).astype(np.float64)
 
 
 def geodetic_to_ecef(lat_deg: float, lon_deg: float, alt_m: float) -> np.ndarray:
@@ -269,12 +336,72 @@ def filter_records(records: list[GpsPoseRecord], *, min_fix_status: int, max_hor
     return filtered
 
 
-def local_gps_positions(records: list[GpsPoseRecord], gps_to_lidar_offset_body: np.ndarray) -> np.ndarray:
+def local_gps_positions(
+    records: list[GpsPoseRecord],
+    gps_to_lidar_offset_body: np.ndarray,
+    *,
+    local_translations_xyz: np.ndarray | None = None,
+) -> np.ndarray:
     positions = []
-    for record in records:
+    for index, record in enumerate(records):
         rot = Rotation.from_quat(record.quaternion_xyzw).as_matrix()
-        positions.append(record.translation_xyz - rot @ gps_to_lidar_offset_body)
+        translation_xyz = (
+            record.translation_xyz
+            if local_translations_xyz is None
+            else np.asarray(local_translations_xyz[index], dtype=np.float64)
+        )
+        positions.append(translation_xyz - rot @ gps_to_lidar_offset_body)
     return np.asarray(positions, dtype=np.float64)
+
+
+def prepare_georeference_inputs(
+    records: list[GpsPoseRecord],
+    *,
+    gps_to_lidar_offset_body: np.ndarray,
+    gps_time_offset_sec: float,
+    dense_traj_csv: str,
+) -> tuple[list[GpsPoseRecord], np.ndarray]:
+    use_gps_offset_compensation = abs(float(gps_time_offset_sec)) > 1e-12 and bool(str(dense_traj_csv).strip())
+    if not use_gps_offset_compensation:
+        reason = "zero offset" if abs(float(gps_time_offset_sec)) <= 1e-12 else "no dense trajectory csv provided"
+        print(f"[gps-offset] inactive: {reason}; using original tf_gps local translations for {len(records)} rows")
+        return records, local_gps_positions(records, gps_to_lidar_offset_body)
+
+    dense_path = Path(dense_traj_csv)
+    if not dense_path.is_file():
+        print(
+            f"[gps-offset] inactive: dense trajectory file not found ({dense_path}); "
+            f"using original tf_gps local translations for {len(records)} rows"
+        )
+        return records, local_gps_positions(records, gps_to_lidar_offset_body)
+
+    dense_traj = load_dense_translation_trajectory(dense_path)
+    kept_records: list[GpsPoseRecord] = []
+    compensated_translations: list[np.ndarray] = []
+    dropped_rows = 0
+    for record in records:
+        t_effective = float(record.t_query_sec) + float(gps_time_offset_sec)
+        translation_xyz = interpolate_dense_translation(dense_traj, t_effective)
+        if translation_xyz is None:
+            dropped_rows += 1
+            continue
+        kept_records.append(record)
+        compensated_translations.append(translation_xyz)
+
+    print(
+        f"[gps-offset] active: offset={gps_time_offset_sec:.6f} sec, dense={dense_path.name}, "
+        f"used {len(kept_records)}/{len(records)} rows, dropped {dropped_rows}"
+    )
+    if len(kept_records) < 3:
+        raise ValueError(
+            "GPS offset compensation left fewer than 3 usable rows after dense-trajectory interpolation "
+            f"(kept {len(kept_records)} of {len(records)})"
+        )
+    return kept_records, local_gps_positions(
+        kept_records,
+        gps_to_lidar_offset_body,
+        local_translations_xyz=np.asarray(compensated_translations, dtype=np.float64),
+    )
 
 
 def weighted_rigid_2d(
@@ -347,6 +474,7 @@ def fit_alignment(
     records: list[GpsPoseRecord],
     *,
     gps_to_lidar_offset_body: np.ndarray,
+    local_points: np.ndarray | None = None,
     allow_scale: bool,
     outlier_threshold_m: float,
 ) -> AlignmentResult:
@@ -366,7 +494,8 @@ def fit_alignment(
         ],
         dtype=np.float64,
     )
-    local_points = local_gps_positions(records, gps_to_lidar_offset_body)
+    if local_points is None:
+        local_points = local_gps_positions(records, gps_to_lidar_offset_body)
     weights = compute_weights(records)
     inlier_mask = np.ones(len(records), dtype=bool)
 
@@ -451,10 +580,26 @@ def determine_output_dir(args: argparse.Namespace) -> Path:
 def output_path(user_value: str, fallback_name: str, output_dir: Path) -> Path:
     return Path(user_value) if user_value else output_dir / fallback_name
 
+def remap_local_xy(points_xyz: np.ndarray) -> np.ndarray:
+    out = points_xyz.copy()
+    out[:, 0] = points_xyz[:, 1]
+    out[:, 1] = -points_xyz[:, 0]
+    out[:, 2] = points_xyz[:, 2]
+    return out
 
 def points_to_gps(points_xyz: np.ndarray, alignment: AlignmentResult, native_mode: str) -> tuple[np.ndarray, list[dict[str, float]]]:
+    remapped_points = np.asarray(points_xyz, dtype=np.float64).copy()
+
+    # Temporary debug patch:
+    # rotate local XY by -90 deg before applying the fitted local->ENU transform
+    # (x, y) -> (y, -x)
+    x_local = remapped_points[:, 0].copy()
+    y_local = remapped_points[:, 1].copy()
+    remapped_points[:, 0] = -y_local
+    remapped_points[:, 1] = x_local
+
     points_enu = apply_similarity(
-        points_xyz,
+        remapped_points,
         scale=alignment.scale,
         yaw_rad=alignment.yaw_rad,
         translation_enu_m=alignment.translation_enu_m,
@@ -562,10 +707,15 @@ def write_transform_json(
     records: list[GpsPoseRecord],
     alignment: AlignmentResult,
     allow_scale: bool,
+    gps_time_offset_sec: float,
+    dense_traj_csv: str,
 ) -> None:
     yaw_deg = math.degrees(alignment.yaw_rad)
     cos_yaw = math.cos(alignment.yaw_rad)
     sin_yaw = math.sin(alignment.yaw_rad)
+    gps_offset_active = bool(
+        abs(float(gps_time_offset_sec)) > 1e-12 and dense_traj_csv and Path(dense_traj_csv).is_file()
+    )
     payload = {
         "pipeline": "georeference_from_tf_gps",
         "source_tf_gps_csv": str(source_csv.resolve()),
@@ -593,6 +743,11 @@ def write_transform_json(
             "rmse_xy_m": float(alignment.rmse_xy_m),
             "rmse_z_m": float(alignment.rmse_z_m),
         },
+        "gps_offset_compensation": {
+            "gps_time_offset_sec": float(gps_time_offset_sec),
+            "dense_traj_csv": str(Path(dense_traj_csv).resolve()) if dense_traj_csv else "",
+            "active": gps_offset_active,
+        },
     }
     output_value.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -608,18 +763,24 @@ def main() -> int:
     aligned_csv_output = output_path(args.aligned_csv_output, "tf_gps_georeferenced.csv", output_dir)
 
     gps_to_lidar_offset_body = load_offset(args)
-    records = filter_records(
+    filtered_records = filter_records(
         load_tf_gps_records(tf_gps_csv),
         min_fix_status=args.min_fix_status,
         max_horizontal_cov_m2=args.max_horizontal_cov_m2,
     )
+    records, local_points = prepare_georeference_inputs(
+        filtered_records,
+        gps_to_lidar_offset_body=gps_to_lidar_offset_body,
+        gps_time_offset_sec=args.gps_time_offset_sec,
+        dense_traj_csv=args.dense_traj_csv,
+    )
     alignment = fit_alignment(
         records,
         gps_to_lidar_offset_body=gps_to_lidar_offset_body,
+        local_points=local_points,
         allow_scale=args.allow_scale,
         outlier_threshold_m=args.outlier_threshold_m,
     )
-    local_points = local_gps_positions(records, gps_to_lidar_offset_body)
 
     write_transform_json(
         transform_output,
@@ -628,6 +789,8 @@ def main() -> int:
         records,
         alignment,
         args.allow_scale,
+        args.gps_time_offset_sec,
+        args.dense_traj_csv,
     )
     write_aligned_csv(aligned_csv_output, records, local_points, alignment)
 

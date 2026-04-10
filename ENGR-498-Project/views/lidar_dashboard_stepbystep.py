@@ -386,9 +386,24 @@ class FusionParametersDialog(QDialog):
         )
         form.addRow("Fusion Time Offset:", self.fusion_offset_ms)
 
+        self.override_gps_cb = QCheckBox("Override GPS georeference time offset")
+        self.override_gps_cb.setChecked("gps_time_offset_sec" in timing_overrides)
+        layout.addWidget(self.override_gps_cb)
+
+        self.gps_time_offset_ms = QDoubleSpinBox()
+        self.gps_time_offset_ms.setRange(-5000.0, 5000.0)
+        self.gps_time_offset_ms.setDecimals(3)
+        self.gps_time_offset_ms.setSingleStep(0.5)
+        self.gps_time_offset_ms.setSuffix(" ms")
+        self.gps_time_offset_ms.setValue(
+            float(timing_overrides.get("gps_time_offset_sec", effective_timing.get("gps_time_offset_sec", 0.0))) * 1000.0
+        )
+        form.addRow("GPS Georeference Time Offset:", self.gps_time_offset_ms)
+
         effective_label = QLabel(
             "A zero fusion offset uses the existing nearest-pose camera CSV matching. "
-            "A non-zero offset shifts frame timestamps and uses interpolated pose lookup. "
+            "A non-zero fusion offset shifts frame timestamps and uses interpolated pose lookup. "
+            "GPS georeferencing has its own separate offset control and only changes which local translations are used during alignment. "
             "GPS georeferencing remains strict by default; enable developer mode above only for bags that truly have no GPS."
         )
         effective_label.setWordWrap(True)
@@ -417,6 +432,8 @@ class FusionParametersDialog(QDialog):
         timing_overrides = {}
         if self.override_fusion_cb.isChecked():
             timing_overrides["fusion_time_offset_sec"] = float(self.fusion_offset_ms.value()) / 1000.0
+        if self.override_gps_cb.isChecked():
+            timing_overrides["gps_time_offset_sec"] = float(self.gps_time_offset_ms.value()) / 1000.0
         return fusion_config, gps_config, timing_overrides
 
 
@@ -459,6 +476,14 @@ class GlobalTimingSettingsDialog(QDialog):
         self.fusion_offset_ms.setValue(float(current_timing.get("fusion_time_offset_sec", 0.0)) * 1000.0)
         form.addRow("Default Fusion Time Offset:", self.fusion_offset_ms)
 
+        self.gps_time_offset_ms = QDoubleSpinBox()
+        self.gps_time_offset_ms.setRange(-5000.0, 5000.0)
+        self.gps_time_offset_ms.setDecimals(3)
+        self.gps_time_offset_ms.setSingleStep(0.5)
+        self.gps_time_offset_ms.setSuffix(" ms")
+        self.gps_time_offset_ms.setValue(float(current_timing.get("gps_time_offset_sec", 0.0)) * 1000.0)
+        form.addRow("Default GPS Georeference Time Offset:", self.gps_time_offset_ms)
+
         self.fusion_visualize_cb = QCheckBox("Enable live Open3D visualization during Fusion")
         self.fusion_visualize_cb.setChecked(bool(current_fusion.get("visualize", False)))
         form.addRow("Fusion Visualization:", self.fusion_visualize_cb)
@@ -485,6 +510,7 @@ class GlobalTimingSettingsDialog(QDialog):
         return {
             "timing": {
                 "fusion_time_offset_sec": float(self.fusion_offset_ms.value()) / 1000.0,
+                "gps_time_offset_sec": float(self.gps_time_offset_ms.value()) / 1000.0,
             },
             "fusion": {
                 "visualize": bool(self.fusion_visualize_cb.isChecked()),
