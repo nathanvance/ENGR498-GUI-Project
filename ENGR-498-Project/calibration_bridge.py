@@ -84,6 +84,15 @@ def _tum_pose_to_matrix(values: list[float]) -> np.ndarray:
     return matrix
 
 
+def _invert_rigid_transform(matrix: np.ndarray) -> np.ndarray:
+    rotation = matrix[:3, :3]
+    translation = matrix[:3, 3]
+    inverse = np.eye(4, dtype=np.float64)
+    inverse[:3, :3] = rotation.T
+    inverse[:3, 3] = -rotation.T @ translation
+    return inverse
+
+
 def export_fusion_calibration_artifacts(calibration_run_dir: Path, output_dir: Path) -> tuple[Path, Path, Path]:
     calibration_run_dir = calibration_run_dir.resolve()
     output_dir = output_dir.resolve()
@@ -117,9 +126,15 @@ def export_fusion_calibration_artifacts(calibration_run_dir: Path, output_dir: P
     if not isinstance(pose_values, list):
         raise ValueError(f"Calibration file does not contain a usable LiDAR-camera transform: {calib_json_path}")
 
+    # direct_visual_lidar_calibration writes T_lidar_camera as the inverse of the
+    # optimization variable T_camera_lidar. Fusion expects T_lidar_cam to map
+    # LiDAR-frame points into the camera frame before projection, so invert here.
+    camera_to_lidar = _tum_pose_to_matrix(pose_values)
+    lidar_to_camera = _invert_rigid_transform(camera_to_lidar)
+
     extrinsics_json = output_dir / "extrinsics_from_calibration.json"
     extrinsics_payload = {
-        "T_lidar_cam": _tum_pose_to_matrix(pose_values).tolist(),
+        "T_lidar_cam": lidar_to_camera.tolist(),
         "source_calib_json": str(calib_json_path),
     }
     extrinsics_json.write_text(json.dumps(extrinsics_payload, indent=2), encoding="utf-8")
