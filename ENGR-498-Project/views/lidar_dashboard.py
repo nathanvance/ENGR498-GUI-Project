@@ -338,14 +338,6 @@ class DashboardView(QWidget):
         self.rviz_checkbox.stateChanged.connect(self._on_rviz_checkbox_changed)
         layout.addWidget(self.rviz_checkbox)
 
-        btn_global_settings = QPushButton("Global Settings")
-        btn_global_settings.setToolTip(
-            "Set global timing defaults, the GPS developer-mode override, and the Fusion visualization default."
-        )
-        btn_global_settings.setStyleSheet(button_style("#0f766e", "#14b8a6"))
-        btn_global_settings.clicked.connect(self._open_global_settings_dialog)
-        layout.addWidget(btn_global_settings)
-
         btn_timing_viewer = QPushButton("Timing Viewer")
         btn_timing_viewer.setToolTip(
             "Open a 3D timing/offset viewer for the currently selected scan using pose-recovery outputs only."
