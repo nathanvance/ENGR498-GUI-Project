@@ -6,13 +6,15 @@ import socket
 import subprocess
 import sys
 import json
+import time
 import urllib.parse
+import urllib.request
 import webbrowser
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from calibration_bridge import export_fusion_calibration_artifacts, resolve_calibration_run
+from calibration_bridge import resolve_fusion_calibration_artifacts
 from gps_csv_utils import count_usable_tf_gps_rows
 from project_paths import FUSION_DIR, MATLAB_EXTRACT_DIR, PROJECT_ROOT, ROSBAG_PREPROCESSING_DIR
 from scan_metadata import (
@@ -39,7 +41,8 @@ RUN_YOLO_SCRIPT = FUSION_DIR / "run_yolo_inference.py"
 RUN_FUSION_SCRIPT = FUSION_DIR / "fuse_masks_to_slam.py"
 RUN_GEOREF_SCRIPT = FUSION_DIR / "georeference_from_tf_gps.py"
 RUN_POWERLINE_EXPORT_SCRIPT = FUSION_DIR / "export_powerlines_to_leaflet.py"
-RUN_WIRE_EXTRACTION_SCRIPT = MATLAB_EXTRACT_DIR / "testMatlab.py"
+RUN_WIRE_EXTRACTION_SCRIPT = PROJECT_ROOT / "wire_extraction" / "run_wire_extraction.py"
+LEAFLET_LOCAL_SERVER_SCRIPT = PROJECT_ROOT / "leaflet_local_server.py"
 
 
 class ColabFallbackRequiredError(RuntimeError):
@@ -57,6 +60,15 @@ def _extract_prefixed_summary(lines: list[str], prefix: str) -> str | None:
         if line.startswith(prefix):
             return line[len(prefix) :].strip()
     return None
+
+
+def _leaflet_server_has_api(host: str, port: int) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/api/health", timeout=0.5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return bool(payload.get("ok")) and payload.get("service") == "leaflet-local-server"
+    except Exception:
+        return False
 
 
 def _summarize_calibration_failure(lines: list[str], return_code: int, *, context: str) -> str:
@@ -116,16 +128,22 @@ class LeafletServerManager:
 
     def ensure_running(self) -> None:
         if _is_port_open("127.0.0.1", self.port):
-            return
+            if _leaflet_server_has_api("127.0.0.1", self.port):
+                return
+            raise RuntimeError(
+                f"Port {self.port} is already in use by another local server. "
+                "Close that server and reopen the map so the editable Leaflet server can start."
+            )
         if self._process is not None and self._process.poll() is None:
-            return
+            if _leaflet_server_has_api("127.0.0.1", self.port):
+                return
 
         creationflags = 0
         if os.name == "nt":
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
         self._process = subprocess.Popen(
-            [sys.executable, "-m", "http.server", str(self.port)],
+            [sys.executable, str(LEAFLET_LOCAL_SERVER_SCRIPT), "--port", str(self.port)],
             cwd=str(PROJECT_ROOT),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -133,10 +151,19 @@ class LeafletServerManager:
             creationflags=creationflags,
         )
 
+        for _ in range(30):
+            if _leaflet_server_has_api("127.0.0.1", self.port):
+                return
+            if self._process.poll() is not None:
+                break
+            time.sleep(0.1)
+
+        raise RuntimeError("Failed to start the editable Leaflet local server.")
+
     def open_map(self, *, objects_json: Path | None = None, powerlines_json: Path | None = None) -> str:
         self.ensure_running()
         params: dict[str, str] = {}
-        params["_viewer"] = "20260409a"
+        params["_viewer"] = "20260411a"
 
         if objects_json is not None and objects_json.exists():
             params["data"] = "/" + os.path.relpath(objects_json, PROJECT_ROOT).replace("\\", "/")
@@ -398,33 +425,30 @@ class BackendPipelineThread(QThread):
             update_file_entry(metadata, scan_dir, key, None)
 
     def _resolve_wire_input_las(self, scan_dir: Path, metadata: dict) -> Path:
-        point_clouds_dir = scan_dir / "processed" / "point_clouds"
-        key, candidate = first_existing_artifact(
-            scan_dir,
-            metadata,
-            ("segmented", "filtered_las", "raw_las", "filtered_pcd", "raw_pcd"),
-        )
-        if candidate is None or key is None:
+        filtered_las = resolve_scan_path(scan_dir, metadata.get("files", {}).get("filtered_las"))
+        if filtered_las is None or not filtered_las.is_file():
+            fallback_candidates = [
+                scan_dir / "processed" / "point_clouds" / "filtered" / "cloud.las",
+                scan_dir / "processed" / "point_clouds" / "processed" / "point_clouds" / "filtered" / "cloud.las",
+            ]
+            recovered = next((candidate for candidate in fallback_candidates if candidate.is_file()), None)
+            if recovered is not None:
+                update_file_entry(metadata, scan_dir, "filtered_las", recovered)
+                save_scan_metadata(scan_dir, metadata)
+                filtered_las = recovered
+            else:
+                raise FileNotFoundError(
+                    "Wire extraction now requires the filtered LAS from the filtering step. "
+                    "Expected artifact: processed/point_clouds/filtered/cloud.las"
+                )
+
+        suffix = filtered_las.suffix.lower()
+        if suffix not in {".las", ".laz"}:
             raise FileNotFoundError(
-                "Wire extraction requires an input point cloud. Expected one of: segmented LAS, "
-                "filtered LAS, raw LAS, filtered PCD, or raw PCD."
+                f"Wire extraction requires a filtered LAS/LAZ file, but got: {filtered_las}"
             )
 
-        suffix = candidate.suffix.lower()
-        if suffix in {".las", ".laz"}:
-            return candidate
-
-        if suffix in {".pcd", ".ply"}:
-            las_name = "cloud_filtered.las" if key == "filtered_pcd" else "cloud.las"
-            exported = convert_point_cloud_to_las(candidate, point_clouds_dir / las_name)
-            target_key = "filtered_las" if key == "filtered_pcd" else "raw_las"
-            update_file_entry(metadata, scan_dir, target_key, exported)
-            if target_key == "raw_las":
-                update_file_entry(metadata, scan_dir, "las", exported)
-            save_scan_metadata(scan_dir, metadata)
-            return exported
-
-        raise FileNotFoundError(f"Unsupported wire-extraction point cloud type: {candidate}")
+        return filtered_las
 
     def _export_powerline_overlay(self, scan_dir: Path, metadata: dict) -> Path | None:
         artifacts = resolve_artifact_paths(scan_dir, metadata)
@@ -558,6 +582,9 @@ class BackendPipelineThread(QThread):
         update_file_entry(metadata, scan_dir, "wires_points", output_dir / "wires_points.npz")
         update_file_entry(metadata, scan_dir, "wire_info", output_dir / "wire_info.json")
         update_file_entry(metadata, scan_dir, "ground_points", output_dir / "ground_points.npz")
+        update_file_entry(metadata, scan_dir, "pre_stitch_wires_points", output_dir / "wire_clusters_pre_stitch.npz")
+        update_file_entry(metadata, scan_dir, "pre_stitch_wire_info", output_dir / "wire_clusters_pre_stitch_info.json")
+        update_file_entry(metadata, scan_dir, "wire_stitching_report", output_dir / "wire_stitching_report.json")
         update_status(metadata, "wire_extraction", "done")
         save_scan_metadata(scan_dir, metadata)
         self.emit_log(f"[outputs] wire extraction dir: {output_dir}")
@@ -567,29 +594,8 @@ class BackendPipelineThread(QThread):
         self._maybe_georeference(scan_dir, metadata, tf_gps_path=tf_gps_path, powerline_overlay=powerline_overlay)
         return output_dir
 
-    def _resolve_calibration_artifacts(self, scan_dir: Path, metadata: dict) -> tuple[Path, Path, Path]:
-        fusion_cfg = metadata.get("config", {}).get("fusion", {})
-        files = metadata.get("files", {})
-
-        linked_run = resolve_scan_path(scan_dir, files.get("calibration_run_dir")) or resolve_scan_path(
-            scan_dir, fusion_cfg.get("calibration_run_dir")
-        )
-        calibration_run = resolve_calibration_run(linked_run, fallback_to_latest=True)
-        if calibration_run is None or not calibration_run.is_dir():
-            raise FileNotFoundError(
-                "No calibration run was found. Complete calibration mode first, then link the calibration output to this scan."
-            )
-
-        calibration_output_dir = scan_dir / "processed" / "calibration"
-        calib_json_path, intrinsics_json, extrinsics_json = export_fusion_calibration_artifacts(
-            calibration_run, calibration_output_dir
-        )
-        update_file_entry(metadata, scan_dir, "calibration_run_dir", calibration_run)
-        update_file_entry(metadata, scan_dir, "calibration_calib_json", calib_json_path)
-        update_file_entry(metadata, scan_dir, "resolved_intrinsics_json", intrinsics_json)
-        update_file_entry(metadata, scan_dir, "resolved_extrinsics_json", extrinsics_json)
-        save_scan_metadata(scan_dir, metadata)
-        return calibration_run, intrinsics_json, extrinsics_json
+    def _resolve_calibration_artifacts(self, scan_dir: Path, metadata: dict) -> tuple[Path, Path, Path, str]:
+        return resolve_fusion_calibration_artifacts(scan_dir, metadata, persist_metadata=True)
 
     def _run_yolo_inference(self, scan_dir: Path, metadata: dict, pose_run: Path) -> tuple[Path, Path, Path]:
         config = metadata.get("config", {})
@@ -648,12 +654,21 @@ class BackendPipelineThread(QThread):
         fusion_offset_sec = float(effective_timing.get("fusion_time_offset_sec", 0.0))
         use_fusion_interpolation = abs(fusion_offset_sec) > 1e-12
         visualize_fusion = bool(fusion_global_cfg.get("visualize", False))
+        min_object_support_frames = max(1, int(fusion_global_cfg.get("min_object_support_frames", 1)))
+        clustering_strength = str(fusion_global_cfg.get("clustering_strength", "default") or "default")
+        clustering_eps_factor = float(fusion_global_cfg.get("eps_factor", 2.5))
         self.emit_log(
             "[timing] fusion offset "
             f"{fusion_offset_sec:.6f} sec "
             f"({'interpolated dense/sparse pose lookup' if use_fusion_interpolation else 'nearest camera-pose matching'})"
         )
         self.emit_log(f"[fusion] visualization {'enabled' if visualize_fusion else 'disabled'} (global setting).")
+        self.emit_log(f"[fusion] minimum object support frames = {min_object_support_frames}")
+        self.emit_log(
+            "[fusion] clustering strength = "
+            f"{clustering_strength.replace('_', ' ').title()} "
+            f"(eps_factor={clustering_eps_factor:.2f}; stronger = more clusters, weaker = fewer/larger clusters)"
+        )
 
         masks_dir = resolve_scan_path(scan_dir, metadata.get("files", {}).get("masks_dir"))
         meta_dir = resolve_scan_path(scan_dir, metadata.get("files", {}).get("meta_dir"))
@@ -663,8 +678,8 @@ class BackendPipelineThread(QThread):
             update_status(metadata, "inference", "done")
             save_scan_metadata(scan_dir, metadata)
 
-        calibration_run, intrinsics_path, extrinsics_path = self._resolve_calibration_artifacts(scan_dir, metadata)
-        calibration_source = str(self.fusion_context.get("calibration_source") or "scan-linked calibration")
+        calibration_run, intrinsics_path, extrinsics_path, resolved_calibration_source = self._resolve_calibration_artifacts(scan_dir, metadata)
+        calibration_source = str(self.fusion_context.get("calibration_source") or resolved_calibration_source)
         self.emit_log(f"[fusion] calibration source: {calibration_source} -> {calibration_run}")
 
         fusion_point_cloud_key, fusion_point_cloud = first_existing_artifact(
@@ -706,6 +721,10 @@ class BackendPipelineThread(QThread):
             "filename",
             "--time-offset-sec",
             str(fusion_offset_sec),
+            "--min-object-support-frames",
+            str(min_object_support_frames),
+            "--eps-factor",
+            str(clustering_eps_factor),
         ]
         if not visualize_fusion:
             fusion_command.append("--no-visualize")

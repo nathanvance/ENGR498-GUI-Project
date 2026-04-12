@@ -705,7 +705,7 @@ class PointCloudFilterViewer(QWidget):
         
     def save_las_file(self):
         from PySide6.QtWidgets import QMessageBox
-        from scan_metadata import load_scan_metadata, save_scan_metadata, update_file_entry, update_status
+        from scan_metadata import resolve_scan_dir
 
         if self.current_xyz is None:
             QMessageBox.warning(self, "Warning", "No point cloud to save")
@@ -716,7 +716,7 @@ class PointCloudFilterViewer(QWidget):
             return
         if self._busy:
             return
-        scan_dir = Path(self.filename).resolve().parent.parent
+        scan_dir = resolve_scan_dir(Path(self.filename).resolve())
         self._set_busy(True, "Saving filtered cloud...")
         self._save_scan_dir = scan_dir
         self._worker = SaveWorker(scan_dir, self.current_xyz, self.current_colors, self.current_intensity, self.current_normals)
